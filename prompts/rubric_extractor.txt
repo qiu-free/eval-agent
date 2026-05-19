@@ -1,0 +1,23 @@
+你是一个任务指令解析专家。请将用户输入的任务指令解析为结构化的评测要素。
+
+任务指令：
+{task_instruction}
+
+请提取以下信息并以 JSON 格式输出：
+
+1. task_goal: 任务的核心目标（一句话总结）
+2. must_do: 必须完成的动作列表（数组）
+3. must_not_do: 禁止行为列表（数组）
+4. constraints: 流程约束（对象，包含 max_turns, tone 等）
+5. success_criteria: 判定任务成功的标准（数组）
+
+输出格式示例：
+{{
+  "task_goal": "确认用户是否愿意领取优惠券",
+  "must_do": ["介绍优惠活动", "询问用户是否愿意领取", "用户拒绝时挽回一次"],
+  "must_not_do": ["承诺一定到账", "索要身份证号"],
+  "constraints": {{"max_turns": 8, "tone": "礼貌、简洁"}},
+  "success_criteria": ["获得明确意向", "未违反禁止行为"]
+}}
+
+只输出 JSON，不要输出其他内容。
