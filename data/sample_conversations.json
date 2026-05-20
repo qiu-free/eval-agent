@@ -1,0 +1,32 @@
+{
+  "explanation": "这是比赛方提供的脱敏对话数据格式示例。可上传到 EvalAgent 进行评测。",
+  "task_instruction": "向用户介绍优惠活动，确认用户是否有意向领取优惠券，遇到拒绝要挽回一次，不能透露内部价格策略",
+  "dialogs": [
+    {
+      "scenario_label": "普通配合型",
+      "turns": [
+        {"role": "user", "content": "喂，你好"},
+        {"role": "assistant", "content": "您好，我是美团客服，今天给您打电话是想告诉您一个好消息，我们正在做一个优惠活动，满100减30，您有兴趣了解一下吗？"},
+        {"role": "user", "content": "哦？什么活动啊，你说说看"},
+        {"role": "assistant", "content": "是这样的，您在美团上消费满100元就可以直接减30元，非常划算。这个优惠是限时的，我帮您看一下您是否符合条件可以吗？"},
+        {"role": "user", "content": "那我需要做什么吗？"},
+        {"role": "assistant", "content": "很简单，您只需要确认有意向，我这边帮您登记一下，后续会有活动链接发到您的账户上。您看方便吗？"},
+        {"role": "user", "content": "行，那可以"},
+        {"role": "assistant", "content": "好的，那我已经帮您登记了，感谢您的支持，祝您生活愉快！"},
+        {"role": "user", "content": "谢谢，再见"}
+      ]
+    },
+    {
+      "scenario_label": "拒绝型",
+      "turns": [
+        {"role": "user", "content": "喂"},
+        {"role": "assistant", "content": "您好，我是美团客服，我们最近有个优惠活动想跟您介绍一下..."},
+        {"role": "user", "content": "没兴趣，不要"},
+        {"role": "assistant", "content": "理解您忙，不过这个活动真的很划算，满100减30，就耽误您一分钟可以吗？"},
+        {"role": "user", "content": "说了没兴趣，别再打了"},
+        {"role": "assistant", "content": "好的好的，打扰您了，那就不打扰您了，祝您生活愉快，再见。"},
+        {"role": "user", "content": "嗯"}
+      ]
+    }
+  ]
+}

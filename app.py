@@ -7,6 +7,7 @@ import traceback
 import streamlit as st
 
 from config import settings
+from core.dialogue_runner import DialogResult, Turn
 from core.scenario_builder import ScenarioBuilder
 from core.dialogue_runner import DialogueRunner
 from core.evaluator import Evaluator, DIMENSIONS, MultiJudgeResult
@@ -54,11 +55,11 @@ with st.sidebar:
 
 
 # ── 选项卡 ──
-tab1, tab2, tab3 = st.tabs(["🧪 评测运行", "📊 评测结果", "📖 使用说明"])
+tab1, tab2, tab3, tab4 = st.tabs(["🧪 模拟评测", "📤 上传评测", "📊 评测结果", "📖 使用说明"])
 
 
 # ═══════════════════════════════════════════
-# Tab 1: 评测运行
+# Tab 1: 模拟评测（用户模拟器）
 # ═══════════════════════════════════════════
 with tab1:
     col1, col2 = st.columns([3, 1])
@@ -246,11 +247,136 @@ with tab1:
 
 
 # ═══════════════════════════════════════════
-# Tab 2: 评测结果（详细报告）
+# Tab 2: 上传评测（上传对话文件）
 # ═══════════════════════════════════════════
 with tab2:
+    st.subheader("📤 上传对话记录进行评测")
+
+    st.markdown("""
+    比赛方提供的脱敏对话数据（JSON格式）可直接上传评测。
+    **支持格式：**
+    ```json
+    {
+      "task_instruction": "任务指令描述",
+      "dialogs": [
+        {
+          "scenario_label": "场景名称（如配合型）",
+          "turns": [
+            {"role": "user", "content": "用户消息"},
+            {"role": "assistant", "content": "客服回复"}
+          ]
+        }
+      ]
+    }
+    ```
+    也可上传单个对话：
+    ```json
+    {
+      "task_instruction": "...",
+      "scenario_label": "...",
+      "turns": [...]
+    }
+    ```
+    """)
+
+    uploaded_file = st.file_uploader("选择 JSON 文件", type=["json"])
+
+    if uploaded_file is not None:
+        try:
+            data = json.loads(uploaded_file.read().decode("utf-8"))
+            task_instruction = data.get("task_instruction", "")
+            if not task_instruction:
+                st.error("❌ JSON 文件中缺少 task_instruction 字段")
+                st.stop()
+
+            st.success(f"✅ 已读取文件，任务指令: {task_instruction[:80]}...")
+
+            # 解析对话
+            dialogs_data = []
+            if "dialogs" in data:
+                dialogs_data = data["dialogs"]
+            elif "turns" in data:
+                dialogs_data = [data]
+            else:
+                st.error("❌ JSON 文件中缺少 dialogs 或 turns 字段")
+                st.stop()
+
+            st.info(f"📊 共 {len(dialogs_data)} 个对话场景")
+
+            if st.button("🚀 开始评测上传的对话", type="primary", use_container_width=True):
+                if not settings.openai_api_key:
+                    st.error("❌ 请先配置 API Key")
+                    st.stop()
+
+                progress = st.progress(0, text="开始评测...")
+                status = st.empty()
+
+                evaluator = Evaluator()
+                scenario_builder = ScenarioBuilder()
+                rubric = scenario_builder.parse_instruction(task_instruction)
+
+                results = []
+                for i, dialog_data in enumerate(dialogs_data):
+                    status.info(f"▶️ [{i+1}/{len(dialogs_data)}] 评测中...")
+                    progress.progress(int((i / len(dialogs_data)) * 90), text=f"评测第 {i+1} 个对话...")
+
+                    scenario_label = dialog_data.get("scenario_label", f"场景{i+1}")
+                    turns_data = dialog_data.get("turns", [])
+
+                    # 构造 DialogResult
+                    scenario = type("Scenario", (), {
+                        "persona_name": scenario_label,
+                        "persona_id": f"upload_{i}",
+                        "test_goal": "上传对话评测",
+                        "to_dict": lambda self: {"persona_name": self.persona_name, "persona_id": self.persona_id},
+                    })()
+
+                    dialog_turns = []
+                    history = []
+                    for j, t in enumerate(turns_data):
+                        role = t.get("role", "user")
+                        content = t.get("content", "")
+                        if role == "user":
+                            dialog_turns.append(Turn(user=content, assistant="", turn_number=j // 2 + 1))
+                        else:
+                            if dialog_turns:
+                                dialog_turns[-1].assistant = content
+                        history.append({"role": role, "content": content})
+
+                    dialog_result = DialogResult(scenario=scenario, turns=dialog_turns, finished_reason="uploaded")
+
+                    # 多评委评测
+                    mj_result = evaluator.multi_judge_evaluate(dialog_result, rubric, num_judges=3)
+                    eval_result = mj_result.individual_results[-1]
+
+                    results.append({
+                        "scenario": scenario,
+                        "dialog": dialog_result,
+                        "evaluation": eval_result,
+                        "multi_judge": mj_result,
+                    })
+
+                    st.success(f"✅ {scenario_label} — {mj_result.overall_mean}/100 (±{mj_result.overall_std})")
+
+                progress.progress(100, text="✅ 全部评测完成!")
+                status.success(f"🎉 完成！共评测 {len(results)} 个对话")
+
+                st.session_state.results = results
+                st.balloons()
+
+        except json.JSONDecodeError as e:
+            st.error(f"❌ JSON 解析失败: {e}")
+        except Exception as e:
+            st.error(f"❌ 处理出错: {e}")
+            st.code(traceback.format_exc(), language="python")
+
+
+# ═══════════════════════════════════════════
+# Tab 3: 评测结果（详细报告）
+# ═══════════════════════════════════════════
+with tab3:
     if not st.session_state.results:
-        st.info("💡 请先在「评测运行」页面运行一次评测")
+        st.info("💡 请先在「模拟评测」或「上传评测」页面运行一次评测")
     else:
         for idx, result in enumerate(st.session_state.results):
             s = result["scenario"]
@@ -320,9 +446,9 @@ with tab2:
 
 
 # ═══════════════════════════════════════════
-# Tab 3: 使用说明
+# Tab 4: 使用说明
 # ═══════════════════════════════════════════
-with tab3:
+with tab4:
     st.markdown("""
     ## 📖 使用说明
 
