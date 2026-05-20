@@ -18,8 +18,7 @@ build/
 
 # Data
 data/*.db
-outputs/reports/*.pdf
-outputs/reports/*.html
+outputs/reports/*
 
 # OS
 .DS_Store
