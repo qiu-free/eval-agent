@@ -9,7 +9,7 @@ import streamlit as st
 from config import settings
 from core.scenario_builder import ScenarioBuilder
 from core.dialogue_runner import DialogueRunner
-from core.evaluator import Evaluator, DIMENSIONS
+from core.evaluator import Evaluator, DIMENSIONS, MultiJudgeResult
 from core.report_generator import ReportGenerator
 
 # ── 页面配置 ──
@@ -162,9 +162,15 @@ with tab1:
                             """
                         st.markdown(chat_html, unsafe_allow_html=True)
 
-                    # ── 评测 ──
-                    status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 正在评测...")
-                    eval_result = evaluator.evaluate(dialog_result, rubric)
+                    # ── 多评委评测 ──
+                    status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 多评委评测中(3轮)...")
+                    mj_result = evaluator.multi_judge_evaluate(dialog_result, rubric, num_judges=3)
+
+                    # 保存最后一次评测结果用于报告
+                    eval_result = mj_result.individual_results[-1]
+
+                    # 违规定位
+                    violation_locs = evaluator.locate_violations(dialog_result, rubric)
 
                     # ── 保存 ──
                     report_gen.save_report(
@@ -176,6 +182,8 @@ with tab1:
                         "scenario": scenario,
                         "dialog": dialog_result,
                         "evaluation": eval_result,
+                        "multi_judge": mj_result,
+                        "violation_locations": violation_locs,
                     })
 
                     # 更新整体进度
@@ -210,21 +218,31 @@ with tab1:
             with cols[idx]:
                 s = result["scenario"]
                 e = result["evaluation"]
-                score = e.overall_score
+                mj = result.get("multi_judge")
+                score = mj.overall_mean if mj else e.overall_score
+                score_std = mj.overall_std if mj else 0
+
                 if score >= 80:
                     emoji = "🟢"
                 elif score >= 60:
                     emoji = "🟡"
                 else:
                     emoji = "🔴"
-                st.metric(label=f"{emoji} {s.persona_name}", value=f"{score}/100")
+
+                label_text = f"{emoji} {s.persona_name}"
+                if score_std > 0:
+                    label_text += f" ±{score_std}"
+                st.metric(label=label_text, value=f"{score}/100")
 
                 for dim in DIMENSIONS:
                     key = dim["key"]
                     if key in e.dimensions:
                         ds = e.dimensions[key]
                         bar = "█" * ds.score + "░" * (5 - ds.score)
-                        st.caption(f"{dim['name']}: {bar} {ds.score}/5")
+                        label = dim['name']
+                        if mj and key in mj.dimension_stds and mj.dimension_stds[key] > 0:
+                            label += f" ±{mj.dimension_stds[key]:.1f}"
+                        st.caption(f"{label}: {bar} {ds.score}/5")
 
 
 # ═══════════════════════════════════════════
@@ -239,7 +257,20 @@ with tab2:
             e = result["evaluation"]
             d = result["dialog"]
 
-            with st.expander(f"📊 {s.persona_name} — 总分: {e.overall_score}/100", expanded=(idx == 0)):
+            mj = result.get("multi_judge")
+            mj_title = f"📊 {s.persona_name}"
+            if mj:
+                mj_title += f" — 总分: {mj.overall_mean}/100"
+                if mj.overall_std > 0:
+                    mj_title += f" (±{mj.overall_std})"
+            else:
+                mj_title += f" — 总分: {e.overall_score}/100"
+
+            with st.expander(mj_title, expanded=(idx == 0)):
+                # 多评委一致性
+                if mj and mj.overall_std > 0:
+                    st.info(f"🤖 **多评委一致性**: 3次评分标准差 σ={mj.overall_std} (越小越一致)")
+
                 col1, col2 = st.columns([2, 1])
 
                 with col1:

@@ -49,6 +49,22 @@ class EvalResult:
     violations: list[str] = field(default_factory=list)
     good_points: list[str] = field(default_factory=list)
     summary: str = ""
+    token_usage: int = 0
+    # 违规定位：{违规描述: [(轮次, "user/assistant", 句子)]}
+    violation_locations: dict[str, list[tuple[int, str, str]]] = field(default_factory=dict)
+
+
+@dataclass
+class MultiJudgeResult:
+    """多评委一致性评分结果"""
+    overall_mean: float = 0.0      # 平均分
+    overall_std: float = 0.0       # 标准差（一致性指标）
+    dimension_means: dict[str, float] = field(default_factory=dict)
+    dimension_stds: dict[str, float] = field(default_factory=dict)
+    individual_results: list[EvalResult] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
+    good_points: list[str] = field(default_factory=list)
+    summary: str = ""
 
 
 class Evaluator:
@@ -203,3 +219,71 @@ class Evaluator:
             )
         result.overall_score = 60.0
         return result
+
+    def multi_judge_evaluate(
+        self, dialog_result: DialogResult, rubric: TaskRubric, num_judges: int = 3
+    ) -> MultiJudgeResult:
+        """多评委一致性评分——多次评测取均值+标准差"""
+        import statistics
+
+        results = []
+        for _ in range(num_judges):
+            results.append(self.evaluate(dialog_result, rubric))
+
+        # 计算各维度的均值和标准差
+        dim_means = {}
+        dim_stds = {}
+        for dim in DIMENSIONS:
+            key = dim["key"]
+            scores = [r.dimensions[key].score for r in results if key in r.dimensions]
+            dim_means[key] = statistics.mean(scores) if scores else 0
+            dim_stds[key] = statistics.stdev(scores) if len(scores) > 1 else 0
+
+        overall_scores = [r.overall_score for r in results]
+        overall_mean = statistics.mean(overall_scores)
+        overall_std = statistics.stdev(overall_scores) if len(overall_scores) > 1 else 0
+
+        # 合并违规项和亮点（去重）
+        all_violations = []
+        all_good = []
+        seen_v = set()
+        seen_g = set()
+        for r in results:
+            for v in r.violations:
+                if v not in seen_v:
+                    all_violations.append(v)
+                    seen_v.add(v)
+            for g in r.good_points:
+                if g not in seen_g:
+                    all_good.append(g)
+                    seen_g.add(g)
+
+        return MultiJudgeResult(
+            overall_mean=round(overall_mean, 1),
+            overall_std=round(overall_std, 1),
+            dimension_means={k: round(v, 1) for k, v in dim_means.items()},
+            dimension_stds={k: round(v, 1) for k, v in dim_stds.items()},
+            individual_results=results,
+            violations=all_violations,
+            good_points=all_good,
+            summary=results[-1].summary if results else "",
+        )
+
+    def locate_violations(
+        self, dialog_result: DialogResult, rubric: TaskRubric
+    ) -> dict[str, list[tuple[int, str, str]]]:
+        """违规定位——找到违规行为发生在哪一轮哪句话"""
+        locations = {}
+
+        # 禁词检测定位
+        for pattern in FORBIDDEN_PATTERNS:
+            for i, turn in enumerate(dialog_result.turns):
+                # 检查客服回复
+                for role, text in [("assistant", turn.assistant), ("user", turn.user)]:
+                    if pattern.search(text):
+                        key = f"检测到违规表述: '{pattern.pattern}'"
+                        if key not in locations:
+                            locations[key] = []
+                        locations[key].append((turn.turn_number, role, text[:50]))
+
+        return locations

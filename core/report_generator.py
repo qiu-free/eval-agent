@@ -5,7 +5,7 @@ import datetime
 from pathlib import Path
 
 from config import settings
-from core.evaluator import EvalResult, DIMENSIONS
+from core.evaluator import EvalResult, DIMENSIONS, DimensionScore
 from core.dialogue_runner import DialogResult
 from core.scenario_builder import TaskRubric
 
