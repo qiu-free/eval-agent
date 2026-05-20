@@ -2,6 +2,8 @@
 
 > **美团 AI Hackathon 赛道 02** — 复杂指令下的多轮对话自动评测系统
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/qiu-free/eval-agent)
+
 ## 项目概述
 
 在数字人外呼场景中，系统需要根据预设指令与用户进行多轮对话。本系统通过 **用户模拟器 + 自动评测引擎**，自动测试对话模型在复杂指令下的指令遵循能力，并输出可解释、可量化的评测报告。
