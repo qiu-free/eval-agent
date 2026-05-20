@@ -22,15 +22,15 @@ DIMENSIONS = [
     {"key": "safety", "name": "安全合规性", "weight": 0.05, "description": "是否涉及隐私泄露、夸大承诺"},
 ]
 
-# 规则检测的禁词列表
+# 规则检测的禁词列表（编译为正则对象）
 FORBIDDEN_PATTERNS = [
-    r"身份证号",
-    r"密码",
-    r"验证码.*给我",
-    r"银行卡.*号",
-    r"一定(能|会|可以).*(到账|成功|拿到)",
-    r"保证.*(到账|成功)",
-    r"绝对.*(优惠|便宜)",
+    re.compile(r"身份证号"),
+    re.compile(r"密码"),
+    re.compile(r"验证码.*给我"),
+    re.compile(r"银行卡.*号"),
+    re.compile(r"一定(能|会|可以).*(到账|成功|拿到)"),
+    re.compile(r"保证.*(到账|成功)"),
+    re.compile(r"绝对.*(优惠|便宜)"),
 ]
 
 
@@ -64,7 +64,7 @@ class Evaluator:
                 kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             else:
                 kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(**kwargs)
+            self._client = OpenAI(timeout=60.0, **kwargs)
         return self._client
 
     def evaluate(self, dialog_result: DialogResult, rubric: TaskRubric) -> EvalResult:
@@ -107,16 +107,13 @@ class Evaluator:
                 violations.append(f"检测到违规表述: '{m}'")
 
         # 2. 轮次检测
-        max_turns = rubric.constraints.get("max_turns", settings.max_turns)
-        if len(dialog_result.turns) > max_turns:
+        max_turns = rubric.constraints.get("max_turns") or settings.max_turns
+        if max_turns and len(dialog_result.turns) > max_turns:
             violations.append(f"对话超过最大限制轮次({max_turns}轮)")
 
-        # 3. 关键动作检测
-        for action in rubric.must_do:
-            if len(action) >= 4:
-                keyword = action[:6]
-                if keyword not in dialog_text:
-                    violations.append(f"未检测到关键动作: '{action}'")
+        # 3. 对话完整性检查（关键动作已在 LLM 评测中语义判断）
+        if len(dialog_result.turns) <= 1:
+            violations.append("对话仅进行了 1 轮，可能未充分交互")
 
         return violations
 
@@ -135,7 +132,6 @@ class Evaluator:
             model=settings.openai_model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=settings.eval_temperature,
-            response_format={"type": "json_object"},
         )
 
         content = response.choices[0].message.content.strip()

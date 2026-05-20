@@ -18,7 +18,7 @@ class UserSimulator:
                 kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             else:
                 kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(**kwargs)
+            self._client = OpenAI(timeout=60.0, **kwargs)
         return self._client
 
     def generate_response(

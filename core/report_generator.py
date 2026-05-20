@@ -119,11 +119,10 @@ class ReportGenerator:
                 "overall_score": eval_result.overall_score,
                 "dimensions": {
                     dim["name"]: {
-                        "score": eval_result.dimensions[dim["key"]].score,
-                        "reason": eval_result.dimensions[dim["key"]].reason,
+                        "score": eval_result.dimensions.get(dim["key"], DimensionScore(0, "")).score,
+                        "reason": eval_result.dimensions.get(dim["key"], DimensionScore(0, "")).reason,
                     }
                     for dim in DIMENSIONS
-                    if dim["key"] in eval_result.dimensions
                 },
                 "violations": eval_result.violations,
                 "good_points": eval_result.good_points,

@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+import re
+
 from openai import OpenAI
 
 from config import settings
@@ -27,16 +29,17 @@ class DialogResult:
 
 
 # 被测模型的 System Prompt 模板
-SYSTEM_PROMPT_TEMPLATE = """你是一个专业的数字人外呼助手。请严格遵循以下任务指令：
+SYSTEM_PROMPT_TEMPLATE = """你是专业的数字人外呼助手，当前正在执行以下任务：
 
 {task_instruction}
 
-要求：
-1. 严格遵守任务指令，完成核心目标任务。
-2. 不得违反禁止事项。
-3. 保持礼貌、自然、简洁的对话风格。
-4. 根据用户态度灵活推进任务。
-5. 如果任务已经完成或用户明确拒绝继续，可以礼貌结束对话。"""
+## 对话原则
+1. **倾听并回应**：仔细阅读用户上一条消息，针对用户说的具体内容做出回应，不要无视用户的话自顾自推进。
+2. **自然对话**：用口语化的、像真人客服一样的语气交流。适当使用过渡语（"好的"、"我理解"、"是这样的"、"您说的情况我了解了"），让对话有真实感。
+3. **灵活推进**：根据用户态度调整策略——用户热情就推进，用户犹豫就耐心解释，用户拒绝就挽回一次然后尊重决定。
+4. **简洁高效**：每轮回复控制在 2-4 句话，不要长篇大论，也不要只说一句。
+5. **合规底线**：严格禁止违反任务指令中的禁止事项。
+6. **适时结束**：任务完成后礼貌告别，不要没完没了。"""
 
 
 class DialogueRunner:
@@ -53,7 +56,7 @@ class DialogueRunner:
                 kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             else:
                 kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(**kwargs)
+            self._client = OpenAI(timeout=60.0, **kwargs)
         return self._client
 
     def run_dialog(
@@ -72,7 +75,7 @@ class DialogueRunner:
         Returns:
             DialogResult 包含完整对话记录
         """
-        max_turns = max_turns or rubric.constraints.get("max_turns", settings.max_turns)
+        max_turns = max_turns or rubric.constraints.get("max_turns") or settings.max_turns
         result = DialogResult(scenario=scenario)
 
         # 构造被测模型使用的任务指令文本
@@ -89,8 +92,8 @@ class DialogueRunner:
                 dialog_history=dialog_history,
             )
 
-            # 检查结束信号
-            if user_msg.strip() == "<END>":
+            # 检查结束信号（宽松匹配：<END> 可能在引号内、带标点、大小写等）
+            if re.search(r'<END>', user_msg, re.IGNORECASE):
                 result.finished_reason = "end_signal"
                 break
 
@@ -146,7 +149,8 @@ class DialogueRunner:
         response = self._get_client().chat.completions.create(
             model=settings.openai_model_name,
             messages=messages,
-            temperature=0.3,
+            temperature=0.65,
+            max_tokens=250,
         )
 
         return response.choices[0].message.content.strip()
@@ -155,6 +159,7 @@ class DialogueRunner:
         """判断对话是否自然结束"""
         end_phrases = ["再见", "感谢", "谢谢", "祝您", "先这样"]
         has_end_phrase = any(p in assistant_msg for p in end_phrases)
+        # 至少有 1 轮完整对话（user + assistant）后再检查结束
         if has_end_phrase and len(history) >= 2:
             return True
         return False

@@ -107,7 +107,7 @@ class ScenarioBuilder:
                 kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             else:
                 kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(**kwargs)
+            self._client = OpenAI(timeout=60.0, **kwargs)
         return self._client
 
     def parse_instruction(self, instruction: str) -> TaskRubric:
@@ -125,13 +125,26 @@ class ScenarioBuilder:
 
         content = response.choices[0].message.content.strip()
 
-        # Strip markdown code fences if present
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            content = content.rsplit("```", 1)[0].strip()
+        # 更健壮的 Markdown code fence 剥离
+        content = re.sub(r'^```(?:json)?\s*([\s\S]*?)```\s*$', r'\1', content.strip(), flags=re.DOTALL)
 
-        # Also handle potential JSON leading/trailing issues
-        data = json.loads(content)
+        # JSON 解析带异常保护
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            # 回退：尝试修复常见问题后重试
+            content = re.sub(r',\s*}', '}', content)
+            content = re.sub(r',\s*]', ']', content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                data = {
+                    "task_goal": "解析失败，请重试",
+                    "must_do": [],
+                    "must_not_do": [],
+                    "constraints": {},
+                    "success_criteria": [],
+                }
         return TaskRubric.from_dict(data)
 
     def load_scenarios(self, persona_ids: Optional[list[str]] = None) -> list[Scenario]:

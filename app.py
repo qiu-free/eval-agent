@@ -1,7 +1,8 @@
 """EvalAgent Streamlit 前端——输入指令、运行评测、查看报告"""
 
+import html
 import json
-import time
+import traceback
 
 import streamlit as st
 
@@ -29,81 +30,62 @@ if "running" not in st.session_state:
     st.session_state.running = False
 
 
-# ── 侧边栏：配置 ──
+
+# ── 侧边栏 ──
 with st.sidebar:
     st.header("⚙️ 配置")
-
-    # LLM API Key（可覆盖 .env）
-    api_key = st.text_input(
-        "OpenAI API Key",
-        type="password",
-        value=settings.openai_api_key or "",
-        help="留空则使用 .env 中的配置",
-    )
+    api_key = st.text_input("API Key", type="password",
+                            value=settings.openai_api_key or "",
+                            help="留空则使用 .env 中的配置")
     if api_key:
         settings.openai_api_key = api_key
 
-    model_name = st.text_input(
-        "模型名称",
-        value=settings.openai_model_name,
-        help="如 gpt-4o, qwen-max",
-    )
+    model_name = st.text_input("模型名称", value=settings.openai_model_name)
     if model_name:
         settings.openai_model_name = model_name
 
-    base_url = st.text_input(
-        "API Base URL",
-        value=settings.openai_api_base,
-        help="DashScope 用户请使用 https://dashscope.aliyuncs.com/compatible-mode/v1",
-    )
+    base_url = st.text_input("API Base URL", value=settings.openai_api_base,
+                             help="DeepSeek: https://api.deepseek.com")
     if base_url:
         settings.openai_api_base = base_url
 
     st.divider()
-    st.caption("💡 提示：首次使用请在 `.env` 文件中配置 API Key，或在上方输入")
+    st.caption("💡 首次使用请在 `.env` 中配置 API Key")
 
 
-# ── 主界面 ──
-
-# 选项卡
+# ── 选项卡 ──
 tab1, tab2, tab3 = st.tabs(["🧪 评测运行", "📊 评测结果", "📖 使用说明"])
 
-# ── Tab 1: 评测运行 ──
+
+# ═══════════════════════════════════════════
+# Tab 1: 评测运行
+# ═══════════════════════════════════════════
 with tab1:
     col1, col2 = st.columns([3, 1])
-
     with col1:
-        # 任务指令输入
         default_instruction = "向用户介绍优惠活动，确认用户是否有意向领取优惠券，遇到拒绝要挽回一次，不能透露内部价格策略，最终要完成意向收集。"
         task_instruction = st.text_area(
-            "📝 输入任务指令",
-            value=default_instruction,
-            height=120,
-            help="输入数字人外呼助手的任务指令，系统将据此生成测试场景并自动评测",
+            "📝 输入任务指令", value=default_instruction, height=100,
+            help="输入数字人外呼助手的任务指令",
             placeholder="例：向用户介绍活动，确认意向，遇到拒绝挽回一次…",
         )
-
     with col2:
-        # 场景选择
         st.markdown("##### 🎭 选择用户画像")
         scenario_builder = ScenarioBuilder()
         all_scenarios = scenario_builder.load_scenarios()
-
         selected_personas = []
         for s in all_scenarios:
-            if st.checkbox(s.persona_name, value=s.persona_id in ["cooperative", "rejecting", "inquiring"]):
+            default_on = s.persona_id in ["cooperative", "rejecting", "inquiring"]
+            if st.checkbox(s.persona_name, value=default_on):
                 selected_personas.append(s.persona_id)
-
         max_turns = st.slider("最大对话轮次", 3, 12, 8)
 
-    # 运行按钮
     run_btn = st.button(
-        "🚀 开始评测",
-        type="primary",
-        use_container_width=True,
+        "🚀 开始评测", type="primary", use_container_width=True,
         disabled=st.session_state.running or not task_instruction.strip(),
     )
 
+    # ── 评测执行区 ──
     if run_btn:
         if not settings.openai_api_key:
             st.error("❌ 请在侧边栏或 `.env` 中配置 API Key")
@@ -111,29 +93,39 @@ with tab1:
 
         st.session_state.running = True
         st.session_state.results = []
+        st.session_state.live_dialogs = {}
 
-        progress_bar = st.progress(0, text="初始化...")
-        status_placeholder = st.empty()
+        # ── 整体进度条 ──
+        overall_progress = st.progress(0, text="正在初始化...")
+        status_box = st.empty()
+
+        # ── 实时对话展示区 ──
+        live_placeholder = st.empty()
 
         try:
             # Step 1: 解析任务指令
-            status_placeholder.info("📋 正在解析任务指令...")
-            progress_bar.progress(5, text="解析任务指令中...")
+            overall_progress.progress(5, text="📋 解析任务指令...")
+            status_box.info("📋 正在解析任务指令...")
             rubric = scenario_builder.parse_instruction(task_instruction)
 
             with st.expander("📋 指令解析结果", expanded=True):
-                col_a, col_b = st.columns(2)
-                with col_a:
+                ca, cb = st.columns(2)
+                with ca:
                     st.markdown(f"**任务目标**: {rubric.task_goal}")
-                    st.markdown(f"**必须做**: {', '.join(rubric.must_do)}")
-                with col_b:
-                    st.markdown(f"**禁止做**: {', '.join(rubric.must_not_do)}")
-                    st.markdown(f"**约束**: {rubric.constraints}")
+                    st.markdown(f"**必须做**: {'、'.join(rubric.must_do)}")
+                with cb:
+                    st.markdown(f"**禁止做**: {'、'.join(rubric.must_not_do)}")
+                    st.markdown(f"**约束**: 最多 {rubric.constraints.get('max_turns', 'N/A')} 轮")
 
             # Step 2: 加载场景
             selected_scenarios = [s for s in all_scenarios if s.persona_id in selected_personas]
             total = len(selected_scenarios)
-            status_placeholder.info(f"🎭 已选择 {total} 个用户场景，开始评测...")
+            if total == 0:
+                st.warning("⚠️ 请至少选择一个用户画像")
+                st.session_state.running = False
+                st.rerun()
+
+            status_box.info(f"🎭 共 {total} 个场景，开始评测...")
 
             # Step 3: 逐场景运行对话 + 评测
             dialogue_runner = DialogueRunner()
@@ -141,52 +133,77 @@ with tab1:
             report_gen = ReportGenerator()
 
             for i, scenario in enumerate(selected_scenarios):
-                status_placeholder.info(f"▶️ [{i+1}/{total}] 正在运行: {scenario.persona_name}")
-                progress_bar.progress(
-                    int(10 + (i / total) * 80),
-                    text=f"正在运行 {scenario.persona_name}...",
-                )
+                status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 正在对话...")
 
-                # 运行对话
-                dialog_result = dialogue_runner.run_dialog(
-                    scenario=scenario,
-                    rubric=rubric,
-                    max_turns=max_turns,
-                )
+                try:
+                    # ── 运行对话（实时展示每一轮）──
+                    dialog_result = dialogue_runner.run_dialog(
+                        scenario=scenario, rubric=rubric, max_turns=max_turns,
+                    )
 
-                # 评测
-                eval_result = evaluator.evaluate(dialog_result, rubric)
+                    # ── 展示对话内容 ──
+                    with live_placeholder.container():
+                        st.markdown(f"### 💬 {scenario.persona_name} — 对话记录")
+                        chat_html = ""
+                        for turn in dialog_result.turns:
+                            chat_html += f"""
+                            <div style="margin-bottom:12px">
+                                <div style="display:flex; margin-bottom:4px">
+                                    <div style="background:#e8f4fd; border-radius:12px 12px 12px 2px; padding:8px 14px; max-width:80%; color:#1a1a1a; font-size:14px">
+                                        <b>🧑 用户:</b> {html.escape(turn.user)}
+                                    </div>
+                                </div>
+                                <div style="display:flex; justify-content:flex-end; margin-bottom:4px">
+                                    <div style="background:#e8fde8; border-radius:12px 12px 2px 12px; padding:8px 14px; max-width:80%; color:#1a1a1a; font-size:14px">
+                                        <b>🤖 客服:</b> {html.escape(turn.assistant)}
+                                    </div>
+                                </div>
+                            </div>
+                            """
+                        st.markdown(chat_html, unsafe_allow_html=True)
 
-                # 保存
-                report_gen.save_report(
-                    dialog_result, eval_result, rubric,
-                    task_instruction, scenario.persona_name,
-                )
+                    # ── 评测 ──
+                    status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 正在评测...")
+                    eval_result = evaluator.evaluate(dialog_result, rubric)
 
-                st.session_state.results.append({
-                    "scenario": scenario,
-                    "dialog": dialog_result,
-                    "evaluation": eval_result,
-                })
+                    # ── 保存 ──
+                    report_gen.save_report(
+                        dialog_result, eval_result, rubric,
+                        task_instruction, scenario.persona_name,
+                    )
 
-            # Step 4: 完成
-            progress_bar.progress(100, text="✅ 评测完成!")
-            status_placeholder.success(f"✅ 评测完成！共评测 {total} 个场景")
+                    st.session_state.results.append({
+                        "scenario": scenario,
+                        "dialog": dialog_result,
+                        "evaluation": eval_result,
+                    })
 
-            # 显示摘要
+                    # 更新整体进度
+                    pct = int(20 + (i + 1) / total * 70)
+                    overall_progress.progress(pct, text=f"✅ {scenario.persona_name} 完成 ({i+1}/{total})")
+
+                    # 显示本场景摘要
+                    st.success(f"✅ {scenario.persona_name} → 总分: {eval_result.overall_score}/100")
+
+                except Exception as e:
+                    st.error(f"❌ {scenario.persona_name} 评测失败: {str(e)}")
+                    continue  # 跳过失败的场景，继续下一个
+
+            # ── 全部完成 ──
+            overall_progress.progress(100, text="🎉 全部评测完成!")
+            status_box.success(f"🎉 评测完成！共完成 {len(st.session_state.results)}/{total} 个场景")
             st.balloons()
 
         except Exception as e:
-            st.error(f"❌ 评测出错: {str(e)}")
-            import traceback
+            st.error(f"❌ 评测系统出错: {str(e)}")
             st.code(traceback.format_exc(), language="python")
 
         st.session_state.running = False
 
-    # 显示当前结果
+    # ── 摘要卡片（评测完成后显示）──
     if st.session_state.results:
         st.divider()
-        st.subheader("📊 本次评测摘要")
+        st.subheader("📊 评测总览")
 
         cols = st.columns(len(st.session_state.results))
         for idx, result in enumerate(st.session_state.results):
@@ -194,14 +211,14 @@ with tab1:
                 s = result["scenario"]
                 e = result["evaluation"]
                 score = e.overall_score
-                color = "green" if score >= 80 else ("orange" if score >= 60 else "red")
-                st.metric(
-                    label=f"{s.persona_name}",
-                    value=f"{score}/100",
-                    delta_color="normal",
-                )
+                if score >= 80:
+                    emoji = "🟢"
+                elif score >= 60:
+                    emoji = "🟡"
+                else:
+                    emoji = "🔴"
+                st.metric(label=f"{emoji} {s.persona_name}", value=f"{score}/100")
 
-                # 维度迷你条形图
                 for dim in DIMENSIONS:
                     key = dim["key"]
                     if key in e.dimensions:
@@ -210,10 +227,12 @@ with tab1:
                         st.caption(f"{dim['name']}: {bar} {ds.score}/5")
 
 
-# ── Tab 2: 评测结果 ──
+# ═══════════════════════════════════════════
+# Tab 2: 评测结果（详细报告）
+# ═══════════════════════════════════════════
 with tab2:
     if not st.session_state.results:
-        st.info("💡 请先在"评测运行"页面运行一次评测")
+        st.info("💡 请先在「评测运行」页面运行一次评测")
     else:
         for idx, result in enumerate(st.session_state.results):
             s = result["scenario"]
@@ -224,18 +243,28 @@ with tab2:
                 col1, col2 = st.columns([2, 1])
 
                 with col1:
-                    # 对话记录
+                    # ── 聊天气泡风格对话记录 ──
                     st.markdown("#### 💬 对话记录")
                     for turn in d.turns:
-                        with st.container():
-                            st.markdown(f"**第 {turn.turn_number} 轮**")
-                            st.markdown(f"> 🧑 **用户**: {turn.user}")
-                            st.markdown(f"> 🤖 **客服**: {turn.assistant}")
-                            if turn.turn_number < len(d.turns):
-                                st.divider()
+                        st.markdown(f"""
+                        <div style="margin-bottom:14px">
+                            <div style="display:flex; margin-bottom:4px">
+                                <div style="background:#e8f4fd; border-radius:12px 12px 12px 2px; padding:10px 16px; max-width:85%; color:#1a1a1a; font-size:15px; line-height:1.5">
+                                    <b style="color:#1976d2">🧑 用户</b><br>{html.escape(turn.user)}
+                                </div>
+                            </div>
+                            <div style="display:flex; justify-content:flex-end; margin-bottom:4px">
+                                <div style="background:#e8fde8; border-radius:12px 12px 2px 12px; padding:10px 16px; max-width:85%; color:#1a1a1a; font-size:15px; line-height:1.5">
+                                    <b style="color:#2e7d32">🤖 客服</b><br>{html.escape(turn.assistant)}
+                                </div>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        if turn.turn_number < len(d.turns):
+                            st.markdown("---")
 
                 with col2:
-                    # 评分明细
+                    # ── 评分明细 ──
                     st.markdown("#### 📈 各维度评分")
                     for dim in DIMENSIONS:
                         key = dim["key"]
@@ -243,7 +272,7 @@ with tab2:
                             ds = e.dimensions[key]
                             st.markdown(f"**{dim['name']}** ({dim['weight']*100:.0f}%)")
                             st.progress(ds.score / 5, text=f"{ds.score}/5")
-                            st.caption(ds.reason)
+                            st.caption(f"💬 {ds.reason}")
 
                     if e.violations:
                         st.markdown("#### ⚠️ 违规项")
@@ -259,13 +288,15 @@ with tab2:
                     st.info(e.summary)
 
 
-# ── Tab 3: 使用说明 ──
+# ═══════════════════════════════════════════
+# Tab 3: 使用说明
+# ═══════════════════════════════════════════
 with tab3:
     st.markdown("""
     ## 📖 使用说明
 
     ### 快速开始
-    1. **配置 API Key**：在侧边栏输入你的 OpenAI API Key（或通义千问 DashScope Key）
+    1. **配置 API Key**：在侧边栏输入你的 API Key
     2. **输入任务指令**：描述数字人外呼助手的任务
     3. **选择用户画像**：选择要模拟的用户类型
     4. **点击开始评测**：系统自动解析指令 → 模拟对话 → 多维度评测 → 输出报告
@@ -292,19 +323,9 @@ with tab3:
     | 用户意图识别 | 10% | 是否理解用户状态 |
     | 对话自然度 | 5% | 是否像真实客服 |
     | 安全合规性 | 5% | 是否隐私/合规问题 |
-
-    ### 部署选项
-
-    ```bash
-    # Streamlit 运行
-    streamlit run app.py
-
-    # FastAPI 运行（可选）
-    uvicorn main:app --reload
-    ```
     """)
 
 
 # ── 页脚 ──
 st.divider()
-st.caption("EvalAgent v0.1 · 美团 AI Hackathon 赛道 02 · 多轮对话自动评测系统")
+st.caption("EvalAgent v0.1 · 美团 AI Hackathon 赛道 02 · 多轮对话自动评测系统 · DeepSeek V4")
