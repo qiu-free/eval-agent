@@ -29,17 +29,24 @@ class DialogResult:
 
 
 # 被测模型的 System Prompt 模板
-SYSTEM_PROMPT_TEMPLATE = """你是专业的数字人外呼助手，当前正在执行以下任务：
+SYSTEM_PROMPT_TEMPLATE = """你正在打电话给用户，需要完成以下任务：
 
 {task_instruction}
 
-## 对话原则
-1. **倾听并回应**：仔细阅读用户上一条消息，针对用户说的具体内容做出回应，不要无视用户的话自顾自推进。
-2. **自然对话**：用口语化的、像真人客服一样的语气交流。适当使用过渡语（"好的"、"我理解"、"是这样的"、"您说的情况我了解了"），让对话有真实感。
-3. **灵活推进**：根据用户态度调整策略——用户热情就推进，用户犹豫就耐心解释，用户拒绝就挽回一次然后尊重决定。
-4. **简洁高效**：每轮回复控制在 2-4 句话，不要长篇大论，也不要只说一句。
-5. **合规底线**：严格禁止违反任务指令中的禁止事项。
-6. **适时结束**：任务完成后礼貌告别，不要没完没了。"""
+## 通话要点
+- 像真人电话客服一样说话，用口语，带过渡词
+- 每轮先说一句话回应用户，再说你的推进内容
+- 用户热情就推进，犹豫就解释，拒绝就温和挽回一次然后尊重
+- 严格禁止：违反任务中的禁止事项
+- 任务完成就礼貌结束，别拖沓
+
+{opening_line_section}
+
+{call_flow_section}
+
+{faq_section}
+
+{constraints_section}"""
 
 
 class DialogueRunner:
@@ -56,7 +63,7 @@ class DialogueRunner:
                 kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
             else:
                 kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(timeout=60.0, **kwargs)
+            self._client = OpenAI(timeout=300.0, **kwargs)
         return self._client
 
     def run_dialog(
@@ -78,9 +85,6 @@ class DialogueRunner:
         max_turns = max_turns or rubric.constraints.get("max_turns") or settings.max_turns
         result = DialogResult(scenario=scenario)
 
-        # 构造被测模型使用的任务指令文本
-        task_instruction = self._build_instruction(rubric)
-
         # 对话历史
         dialog_history: list[dict] = []
 
@@ -90,16 +94,17 @@ class DialogueRunner:
                 persona_prompt=scenario.persona_prompt,
                 test_goal=scenario.test_goal,
                 dialog_history=dialog_history,
+                rubric=rubric,
             )
 
-            # 检查结束信号（宽松匹配：<END> 可能在引号内、带标点、大小写等）
-            if re.search(r'<END>', user_msg, re.IGNORECASE):
+            # 检查结束信号（至少2轮后才允许结束）
+            if turn_num >= 3 and re.search(r'<END>', user_msg, re.IGNORECASE):
                 result.finished_reason = "end_signal"
                 break
 
             # ── 被测模型生成回复 ──
             assistant_msg = self._call_target_model(
-                task_instruction, dialog_history, user_msg
+                rubric, dialog_history, user_msg
             )
 
             # 记录本轮
@@ -122,7 +127,10 @@ class DialogueRunner:
 
     def _build_instruction(self, rubric: TaskRubric) -> str:
         """从 TaskRubric 构建任务指令文本"""
-        parts = [f"核心目标：{rubric.task_goal}"]
+        parts = []
+        if rubric.role:
+            parts.append(f"你的角色：{rubric.role}")
+        parts.append(f"核心目标：{rubric.task_goal}")
         if rubric.must_do:
             parts.append(f"必须完成：{'；'.join(rubric.must_do)}")
         if rubric.must_not_do:
@@ -131,11 +139,72 @@ class DialogueRunner:
             parts.append(f"语气要求：{rubric.constraints['tone']}")
         return "\n".join(parts)
 
+    def _build_system_prompt(self, rubric: TaskRubric) -> str:
+        """构建完整的 System Prompt，包含结构化指令的各部分"""
+        instruction = self._build_instruction(rubric)
+
+        # 开场白 section
+        opening_section = ""
+        if rubric.opening_line:
+            opening_section = (
+                "## 开场白要求\n"
+                f"首轮对话必须使用以下开场白模板（${...}为变量，需替换为实际值）：\n"
+                f"> {rubric.opening_line}"
+            )
+
+        # 流程 section
+        flow_section = ""
+        if rubric.call_flow:
+            lines = ["## 通话流程（必须按顺序执行）"]
+            for step in rubric.call_flow:
+                lines.append(f"\n### 步骤{step.step_id}: {step.title}")
+                if step.description:
+                    lines.append(f"{step.description}")
+                if step.reference_script:
+                    lines.append(f"参考话术: {step.reference_script}")
+                for sub in step.sub_steps:
+                    lines.append(f"- {sub.get('title', '')}: {sub.get('detail', '')}")
+            flow_section = "\n".join(lines)
+
+        # FAQ section
+        faq_section = ""
+        if rubric.knowledge_points:
+            lines = ["## 知识库（FAQ）—— 回答用户问题必须严格参考以下内容"]
+            for question, answer in rubric.knowledge_points.items():
+                lines.append(f"- **{question}**: {answer}")
+            faq_section = "\n".join(lines)
+
+        # 约束 section
+        constraints_section = ""
+        constraint_lines = []
+        if rubric.must_not_do:
+            constraint_lines.append("禁止行为：")
+            for item in rubric.must_not_do:
+                constraint_lines.append(f"- {item}")
+        forbidden = rubric.constraints.get("forbidden_phrases", [])
+        if isinstance(forbidden, str):
+            forbidden = [forbidden]
+        if forbidden:
+            constraint_lines.append(f"禁止词汇/短语：{'、'.join(forbidden)}")
+        max_words = rubric.constraints.get("max_words_per_turn", 0)
+        if max_words:
+            constraint_lines.append(f"每次回复控制在约 {max_words} 字以内")
+        if constraint_lines:
+            constraints_section = "## 严格约束\n" + "\n".join(constraint_lines)
+
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            task_instruction=instruction,
+            opening_line_section=opening_section,
+            call_flow_section=flow_section,
+            faq_section=faq_section,
+            constraints_section=constraints_section,
+        )
+
     def _call_target_model(
-        self, instruction: str, history: list[dict], user_msg: str
+        self, rubric: TaskRubric, history: list[dict], user_msg: str
     ) -> str:
         """调用被测模型生成回复"""
-        system = SYSTEM_PROMPT_TEMPLATE.format(task_instruction=instruction)
+        system = self._build_system_prompt(rubric)
         messages = [{"role": "system", "content": system}]
 
         # 添加上文（最近 10 轮）
@@ -147,9 +216,9 @@ class DialogueRunner:
         messages.append({"role": "user", "content": user_msg})
 
         response = self._get_client().chat.completions.create(
-            model=settings.openai_model_name,
+            model=settings.target_model_name,
             messages=messages,
-            temperature=0.65,
+            temperature=settings.target_temperature,
             max_tokens=250,
         )
 

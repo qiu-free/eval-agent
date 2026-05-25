@@ -9,16 +9,20 @@ _PROJECT_ROOT = Path(__file__).parent
 
 class Settings(BaseSettings):
     # ── LLM Provider ──
-    llm_provider: Literal["openai"] = "openai"
+    llm_provider: Literal["openai", "dashscope"] = "openai"
     openai_api_key: str = ""
     openai_api_base: str = "https://api.deepseek.com"
     openai_model_name: str = "deepseek-v4-flash"
 
+    # ── Model Separation（防止循环自评）──
+    target_model_name: str = "deepseek-v4-flash"  # 被测模型（System Under Test）
+    target_temperature: float = 0.3  # 被测模型温度（稍高以模拟真实场景）
+
     # ── Evaluation ──
     max_turns: int = 8
-    eval_temperature: float = 0.1
-    sim_temperature: float = 0.8
-    num_evals_per_scenario: int = 1  # 多次采样取平均
+    eval_temperature: float = 0.3  # 多评委评测温度（>0使σ有意义）
+    sim_temperature: float = 0.9
+    num_evals_per_scenario: int = 3  # 多评委数量
 
     # ── Paths ──
     project_root: Path = _PROJECT_ROOT

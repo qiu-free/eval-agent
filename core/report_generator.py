@@ -30,10 +30,26 @@ class ReportGenerator:
         lines.append("## 一、任务概述\n")
         lines.append(f"**任务指令**: {task_instruction}\n")
         lines.append(f"**任务目标**: {rubric.task_goal}\n")
+        if rubric.role:
+            lines.append(f"**AI 角色**: {rubric.role}\n")
         if rubric.must_do:
             lines.append(f"**必须完成**: {'、'.join(rubric.must_do)}\n")
         if rubric.must_not_do:
             lines.append(f"**禁止行为**: {'、'.join(rubric.must_not_do)}\n")
+        if rubric.opening_line:
+            lines.append(f"**开场白模板**: {rubric.opening_line}\n")
+        if rubric.call_flow:
+            lines.append(f"\n### 指定通话流程\n")
+            for step in rubric.call_flow:
+                lines.append(f"- **步骤{step.step_id}**: {step.title}")
+                if step.reference_script:
+                    lines.append(f"  （参考话术: {step.reference_script[:60]}...）\n")
+                else:
+                    lines.append("\n")
+        if rubric.knowledge_points:
+            lines.append(f"\n### 知识库 (FAQ)\n")
+            for q, a in rubric.knowledge_points.items():
+                lines.append(f"- **{q}**: {a[:80]}...\n")
 
         # 二、评测场景
         lines.append("## 二、评测场景\n")
