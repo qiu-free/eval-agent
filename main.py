@@ -19,7 +19,7 @@ report_gen = ReportGenerator()
 
 class EvalRequest(BaseModel):
     task_instruction: str
-    personas: list[str] = ["cooperative", "rejecting", "inquiring"]
+    personas: list[str] = ["cooperative", "rejecting", "inquiring", "distracting", "adversarial", "ambiguous"]
     max_turns: int = 8
 
 
