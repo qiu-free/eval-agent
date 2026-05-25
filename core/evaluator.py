@@ -158,6 +158,8 @@ class Evaluator:
 
         # 2. 轮次检测
         max_turns = rubric.constraints.get("max_turns") or settings.max_turns
+        if isinstance(max_turns, str):
+            max_turns = int(max_turns)
         if max_turns and len(dialog_result.turns) > max_turns:
             violations.append(f"对话超过最大限制轮次({max_turns}轮)")
 
@@ -167,6 +169,8 @@ class Evaluator:
 
         # 4. 字数限制检测（结构化指令专用）
         max_words = rubric.constraints.get("max_words_per_turn", 0)
+        if isinstance(max_words, str):
+            max_words = int(max_words)
         if max_words:
             for turn in dialog_result.turns:
                 word_count = len(turn.assistant)

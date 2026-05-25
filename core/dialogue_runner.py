@@ -83,6 +83,8 @@ class DialogueRunner:
             DialogResult 包含完整对话记录
         """
         max_turns = max_turns or rubric.constraints.get("max_turns") or settings.max_turns
+        if isinstance(max_turns, str):
+            max_turns = int(max_turns)
         result = DialogResult(scenario=scenario)
 
         # 对话历史
