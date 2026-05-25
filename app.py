@@ -1207,8 +1207,8 @@ with tab4:
     hc = st.columns(4)
     api_ok = bool(settings.openai_api_key)
     hc[0].metric("API Key", "✅" if api_ok else "❌")
-    hc[1].metric("角色数量", "6" if api_ok else "0")
-    hc[2].metric("文件格式", "4种")
+    hc[1].metric("用户画像", "6种")
+    hc[2].metric("文件格式", "5种")
     hc[3].metric("评测维度", "10维")
 
 # ═══════════════════════════════════════════
