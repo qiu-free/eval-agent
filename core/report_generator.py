@@ -3,6 +3,7 @@
 import json
 import datetime
 from pathlib import Path
+from io import BytesIO
 
 from config import settings
 from core.evaluator import EvalResult, DIMENSIONS, DimensionScore
@@ -177,6 +178,100 @@ class ReportGenerator:
         )
 
         return report_path
+
+    def generate_pdf(
+        self,
+        dialog_result: DialogResult,
+        eval_result: EvalResult,
+        rubric: TaskRubric,
+        task_instruction: str,
+    ) -> BytesIO:
+        """生成 PDF 格式评测报告（返回 BytesIO 供下载）"""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.lib.colors import HexColor
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+        buf = BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # 自定义样式
+        title_style = ParagraphStyle('Title2', parent=styles['Title'], fontSize=18, spaceAfter=10)
+        h2_style = ParagraphStyle('H2', parent=styles['Heading2'], fontSize=14, spaceAfter=6, spaceBefore=12)
+        body_style = ParagraphStyle('Body', parent=styles['Normal'], fontSize=10, leading=14)
+        small_style = ParagraphStyle('Small', parent=styles['Normal'], fontSize=8, textColor=HexColor('#666'))
+
+        # 标题
+        story.append(Paragraph("EvalAgent 多轮对话评测报告", title_style))
+        story.append(Paragraph(
+            f"生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            small_style
+        ))
+        story.append(Spacer(1, 8*mm))
+
+        # 一、任务概述
+        story.append(Paragraph("一、任务概述", h2_style))
+        story.append(Paragraph(f"任务目标: {rubric.task_goal}", body_style))
+        if rubric.role:
+            story.append(Paragraph(f"AI 角色: {rubric.role}", body_style))
+        story.append(Spacer(1, 4*mm))
+
+        # 二、评测场景
+        story.append(Paragraph("二、评测场景", h2_style))
+        s = dialog_result.scenario
+        story.append(Paragraph(f"用户画像: {s.persona_name}  |  轮次: {len(dialog_result.turns)}  |  原因: {self._end_reason_text(dialog_result.finished_reason)}", body_style))
+        story.append(Spacer(1, 6*mm))
+
+        # 三、评分
+        story.append(Paragraph("三、综合评分", h2_style))
+        score = eval_result.overall_score
+        color = "#43a047" if score >= 80 else ("#ef6c00" if score >= 60 else "#c62828")
+        story.append(Paragraph(f"<font color='{color}'><b>总分: {score}/100</b></font>", body_style))
+        story.append(Spacer(1, 4*mm))
+
+        # 维度表格
+        story.append(Paragraph("各维度评分:", h2_style))
+        table_data = [["维度", "权重", "得分", "评分理由"]]
+        for dim in DIMENSIONS:
+            key = dim["key"]
+            if key in eval_result.dimensions:
+                ds = eval_result.dimensions[key]
+                table_data.append([
+                    dim["name"],
+                    f"{dim['weight']*100:.0f}%",
+                    f"{ds.score}/5",
+                    ds.reason[:60]
+                ])
+        t = Table(table_data, colWidths=[70, 40, 40, 350])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), HexColor('#667eea')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), HexColor('#ffffff')),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -1), 0.5, HexColor('#ccc')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 6*mm))
+
+        # 四、违规
+        if eval_result.violations:
+            story.append(Paragraph("四、违规项", h2_style))
+            for v in eval_result.violations:
+                story.append(Paragraph(f"• {v}", body_style))
+            story.append(Spacer(1, 4*mm))
+
+        # 五、总结
+        if eval_result.summary:
+            story.append(Paragraph("五、总结", h2_style))
+            story.append(Paragraph(eval_result.summary, body_style))
+
+        doc.build(story)
+        buf.seek(0)
+        return buf
 
     def _end_reason_text(self, reason: str) -> str:
         mapping = {

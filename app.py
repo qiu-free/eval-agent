@@ -741,6 +741,24 @@ with tab1:
 
             st.balloons()
 
+            # PDF 下载按钮
+            with st.expander("📥 导出报告", expanded=False):
+                for idx, result in enumerate(st.session_state.results):
+                    s = result["scenario"]
+                    e = result["evaluation"]
+                    d = result["dialog"]
+                    try:
+                        pdf_buf = report_gen.generate_pdf(d, e, rubric, task_instruction)
+                        st.download_button(
+                            label=f"📄 下载 {s.persona_name} PDF报告",
+                            data=pdf_buf,
+                            file_name=f"eval_report_{s.persona_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf",
+                            key=f"pdf_{idx}",
+                        )
+                    except Exception:
+                        st.caption(f"⚠️ {s.persona_name} PDF生成失败（可能缺少reportlab）")
+
         except Exception as e:
             st.error(f"❌ 出错: {e}")
             st.code(traceback.format_exc(), language="python")
