@@ -233,13 +233,40 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# ── 历史持久化工具 ──
+from pathlib import Path
+HISTORY_FILE = Path(__file__).parent / "outputs" / "eval_history.json"
+
+def _load_history():
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+def _save_history(history: list):
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # 只保留最近 20 条，每条只存摘要（不含完整对话）
+    slim = []
+    for h in history[-20:]:
+        slim.append({
+            "time": h.get("time", ""),
+            "count": h.get("count", 0),
+            "instruction": h.get("instruction", "")[:120],
+            "scores": [{"persona": r.get("scenario", {}).get("persona_name", "?"),
+                         "score": r.get("evaluation", {}).get("overall_score", 0)}
+                        for r in h.get("results", [])],
+        })
+    HISTORY_FILE.write_text(json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8")
+
 # ── 初始化 Session State ──
 if "results" not in st.session_state:
     st.session_state.results = []
 if "running" not in st.session_state:
     st.session_state.running = False
 if "eval_history" not in st.session_state:
-    st.session_state.eval_history = []
+    st.session_state.eval_history = _load_history()
 if "generated_scenarios" not in st.session_state:
     st.session_state.generated_scenarios = None
 if "upload_task" not in st.session_state:
@@ -374,15 +401,27 @@ with st.sidebar:
     st.markdown("### 📊 评测历史")
     if st.session_state.eval_history:
         for h in st.session_state.eval_history[-5:]:
+            scores = h.get("scores", []) or [
+                {"persona": r.get("scenario", {}).get("persona_name", "?"),
+                 "score": r.get("evaluation", {}).get("overall_score", 0)}
+                for r in h.get("results", [])
+            ]
+            avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
+            color = "#43a047" if avg_score >= 80 else ("#ef6c00" if avg_score >= 60 else "#c62828")
             st.markdown(f"""
-            <div style="background:#f0f2ff; border-radius:8px; padding:8px 12px; margin-bottom:6px;">
-                <span style="font-size:0.8rem; color:#555;">🕐 {h['time']}</span>
-                <span style="float:right; color:#667eea; font-weight:700;">{h['count']}个场景</span>
+            <div style="background:#f0f2ff; border-radius:10px; padding:10px 12px; margin-bottom:6px; border-left:3px solid {color};">
+                <div style="font-size:0.75rem; color:#888;">🕐 {h['time']}</div>
+                <div style="font-size:0.8rem; color:#555; margin:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{h.get('instruction','')[:50]}</div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:0.75rem; color:#999;">{h['count']}个场景</span>
+                    <span style="font-weight:700; color:{color}; font-size:0.9rem;">{avg_score:.0f}分</span>
+                </div>
             </div>
             """, unsafe_allow_html=True)
         if st.button("🗑️ 清空历史", use_container_width=True):
             st.session_state.eval_history = []
             st.session_state.results = []
+            _save_history([])
             st.rerun()
     else:
         st.caption("暂无历史记录")
@@ -693,10 +732,12 @@ with tab1:
 
             # 保存到历史
             st.session_state.eval_history.append({
-                "time": datetime.now().strftime("%H:%M"),
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "count": len(st.session_state.results),
+                "instruction": task_instruction,
                 "results": st.session_state.results.copy(),
             })
+            _save_history(st.session_state.eval_history)
 
             st.balloons()
 
@@ -943,8 +984,10 @@ with tab2:
                 progress.progress(100, text="完成!")
                 st.session_state.results = results
                 st.session_state.eval_history.append({
-                    "time": datetime.now().strftime("%H:%M"), "count": len(results), "results": results.copy(),
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M"), "count": len(results),
+                    "instruction": task_instruction, "results": results.copy(),
                 })
+                _save_history(st.session_state.eval_history)
                 st.balloons()
 
         except Exception as e:

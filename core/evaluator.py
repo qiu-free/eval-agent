@@ -9,6 +9,7 @@ from openai import OpenAI
 from config import settings
 from core.dialogue_runner import DialogResult
 from core.scenario_builder import TaskRubric
+from core.llm_utils import safe_llm_call
 
 
 # 评测维度配置（权重合计=1.0）
@@ -204,13 +205,21 @@ class Evaluator:
         prompt = template_text.replace("{task_instruction}", instruction)
         prompt = prompt.replace("{dialog_history}", dialog_history)
 
-        response = self._get_client().chat.completions.create(
-            model=settings.openai_model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=settings.eval_temperature,
-        )
+        client = self._get_client()
 
-        content = response.choices[0].message.content.strip()
+        def _call():
+            resp = client.chat.completions.create(
+                model=settings.openai_model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=settings.eval_temperature,
+            )
+            return resp.choices[0].message.content.strip()
+
+        content = safe_llm_call(_call, label="LLM评测", fallback=json.dumps({
+            "overall_score": 40, "violations": ["评测临时失败"], "good_points": [],
+            "summary": "LLM评测重试失败，请刷新重试",
+            **{d["key"]: {"score": 2, "reason": "评测失败"} for d in DIMENSIONS}
+        }))
 
         # 健壮JSON解析：剥离markdown fence + 修复常见问题 + 最多3次重试
         data = None
@@ -379,12 +388,20 @@ class Evaluator:
 }}"""
 
         try:
-            response = self._get_client().chat.completions.create(
-                model=settings.openai_model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            content = response.choices[0].message.content.strip()
+            client = self._get_client()
+
+            def _call():
+                resp = client.chat.completions.create(
+                    model=settings.openai_model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                )
+                return resp.choices[0].message.content.strip()
+
+            content = safe_llm_call(_call, label="流程审核", fallback=json.dumps({
+                "steps_completed": [], "steps_partial": [], "steps_missed": [],
+                "overall_assessment": "评测失败",
+            }))
             content = re.sub(r'^```(?:json)?\s*\n?', '', content)
             content = re.sub(r'\n?```\s*$', '', content)
             data = json.loads(content)
@@ -468,12 +485,21 @@ class Evaluator:
 }}"""
 
         try:
-            response = self._get_client().chat.completions.create(
-                model=settings.openai_model_name,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-            )
-            content = response.choices[0].message.content.strip()
+            client = self._get_client()
+
+            def _call():
+                resp = client.chat.completions.create(
+                    model=settings.openai_model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                )
+                return resp.choices[0].message.content.strip()
+
+            content = safe_llm_call(_call, label="FAQ审核", fallback=json.dumps({
+                "accurate_answers": 0, "inaccurate_answers": 0,
+                "irrelevant_answers": 1, "inaccuracy_details": [],
+                "overall_assessment": "评测失败",
+            }))
             content = re.sub(r'^```(?:json)?\s*\n?', '', content)
             content = re.sub(r'\n?```\s*$', '', content)
             data = json.loads(content)

@@ -4,6 +4,7 @@ from openai import OpenAI
 
 from config import settings
 from core.scenario_builder import TaskRubric
+from core.llm_utils import safe_llm_call
 
 
 class UserSimulator:
@@ -58,13 +59,17 @@ class UserSimulator:
             extra_context = self._build_simulator_context(rubric, dialog_history)
             prompt = prompt + "\n\n" + extra_context
 
-        response = self._get_client().chat.completions.create(
-            model=settings.openai_model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=settings.sim_temperature,
-        )
+        client = self._get_client()
 
-        content = response.choices[0].message.content.strip()
+        def _call():
+            resp = client.chat.completions.create(
+                model=settings.openai_model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=settings.sim_temperature,
+            )
+            return resp.choices[0].message.content.strip()
+
+        content = safe_llm_call(_call, label="用户模拟器", fallback="<END>")
         return content
 
     def _build_simulator_context(

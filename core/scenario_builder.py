@@ -8,6 +8,7 @@ from typing import Optional
 from openai import OpenAI
 
 from config import settings
+from core.llm_utils import safe_llm_call
 
 
 class CallFlowStep:
@@ -206,13 +207,20 @@ class ScenarioBuilder:
 
         prompt = template_text.replace("{task_instruction}", instruction)
 
-        response = self._get_client().chat.completions.create(
-            model=settings.openai_model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=settings.eval_temperature,
-        )
+        client = self._get_client()
 
-        content = response.choices[0].message.content.strip()
+        def _call():
+            resp = client.chat.completions.create(
+                model=settings.openai_model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=settings.eval_temperature,
+            )
+            return resp.choices[0].message.content.strip()
+
+        content = safe_llm_call(_call, label="指令解析", fallback=json.dumps({
+            "task_goal": "解析临时失败，请重试",
+            "must_do": [], "must_not_do": [], "constraints": {}, "success_criteria": [],
+        }))
 
         # 更健壮的 Markdown code fence 剥离
         content = re.sub(r'^```(?:json)?\s*([\s\S]*?)```\s*$', r'\1', content.strip(), flags=re.DOTALL)

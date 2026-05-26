@@ -10,6 +10,7 @@ from openai import OpenAI
 from config import settings
 from core.user_simulator import UserSimulator
 from core.scenario_builder import Scenario, TaskRubric
+from core.llm_utils import safe_llm_call
 
 
 @dataclass
@@ -217,14 +218,18 @@ class DialogueRunner:
 
         messages.append({"role": "user", "content": user_msg})
 
-        response = self._get_client().chat.completions.create(
-            model=settings.target_model_name,
-            messages=messages,
-            temperature=settings.target_temperature,
-            max_tokens=250,
-        )
+        client = self._get_client()
 
-        return response.choices[0].message.content.strip()
+        def _call():
+            resp = client.chat.completions.create(
+                model=settings.target_model_name,
+                messages=messages,
+                temperature=settings.target_temperature,
+                max_tokens=250,
+            )
+            return resp.choices[0].message.content.strip()
+
+        return safe_llm_call(_call, label="被测模型", fallback="抱歉，我暂时无法回复，请稍后再试。")
 
     def _is_natural_end(self, assistant_msg: str, history: list[dict]) -> bool:
         """判断对话是否自然结束"""
