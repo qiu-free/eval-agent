@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     target_model_name: str = "deepseek-v4-flash"  # 被测模型（System Under Test）
     target_temperature: float = 0.3  # 被测模型温度（稍高以模拟真实场景）
 
+    # ── Multi-Model Comparison ──
+    compare_model_name: str = "gpt-4o-mini"  # 对比模型
+    compare_model_temperature: float = 0.3
+
     # ── Evaluation ──
     max_turns: int = 8
     eval_temperature: float = 0.3  # 多评委评测温度（>0使σ有意义）

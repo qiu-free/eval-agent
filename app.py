@@ -576,6 +576,9 @@ with tab1:
     c1, c2, c3 = st.columns([1, 1, 2])
     with c1:
         max_turns = st.slider("🔁 最大轮次", 3, 12, 8)
+        compare_mode = st.checkbox("🔀 双模型对比", value=False, help="同时用两个模型跑对话并对比评分")
+        if compare_mode:
+            compare_model = st.text_input("对比模型", value=settings.compare_model_name, key="compare_model_input")
     with c2:
         # 自动生成场景按钮
         gen_clicked = st.button("🤖 AI 生成场景", use_container_width=True)
@@ -629,16 +632,16 @@ with tab1:
         st.session_state.running = True
         st.session_state.results = []
 
-        overall_progress = st.progress(0, text="初始化...")
-        status_box = st.empty()
         live_area = st.empty()
 
         try:
-            overall_progress.progress(5, text="解析任务指令...")
-            if input_mode == "结构化指令 (JSON)" and structured_data:
-                rubric = scenario_builder.parse_structured_instruction(structured_data)
-            else:
-                rubric = scenario_builder.parse_instruction(task_instruction)
+            # 使用 st.status 实现流式进度展示
+            with st.status("🔍 解析任务指令...", expanded=True) as eval_status:
+                if input_mode == "结构化指令 (JSON)" and structured_data:
+                    rubric = scenario_builder.parse_structured_instruction(structured_data)
+                else:
+                    rubric = scenario_builder.parse_instruction(task_instruction)
+                eval_status.update(label="✅ 指令解析完成", state="running")
 
             with st.expander("📋 指令解析", expanded=True):
                 if rubric.role:
@@ -671,64 +674,84 @@ with tab1:
                 st.session_state.running = False
                 st.rerun()
 
-            status_box.info(f"🎭 {total} 个场景开始评测...")
             dialogue_runner = DialogueRunner()
             evaluator = Evaluator()
             report_gen = ReportGenerator()
 
-            for i, scenario in enumerate(selected_scenarios):
-                status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 对话中...")
+            # 总进度 status
+            with st.status(f"🎭 评测中... 0/{total} 场景", expanded=True) as status:
+                for i, scenario in enumerate(selected_scenarios):
+                    status.update(label=f"💬 [{i+1}/{total}] {scenario.persona_name} — 对话中...", state="running")
 
-                try:
-                    dialog_result = dialogue_runner.run_dialog(
-                        scenario=scenario, rubric=rubric, max_turns=max_turns,
-                    )
+                    try:
+                        dialog_result = dialogue_runner.run_dialog(
+                            scenario=scenario, rubric=rubric, max_turns=max_turns,
+                        )
 
-                    with live_area.container():
-                        st.markdown(f"### 💬 {scenario.persona_name}")
-                        for turn in dialog_result.turns:
-                            st.markdown(f"""
-                            <div class="chat-bubble-user">
-                                <div class="chat-label" style="color:#1976d2;">🧑 用户</div>
-                                <div class="chat-text">{html.escape(turn.user)}</div>
-                            </div>
-                            <div class="chat-bubble-assistant">
-                                <div class="chat-label" style="color:#2e7d32; text-align:right;">🤖 客服</div>
-                                <div class="chat-text">{html.escape(turn.assistant)}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        with live_area.container():
+                            st.markdown(f"### 💬 {scenario.persona_name}")
+                            for turn in dialog_result.turns:
+                                st.markdown(f"""
+                                <div class="chat-bubble-user">
+                                    <div class="chat-label" style="color:#1976d2;">🧑 用户</div>
+                                    <div class="chat-text">{html.escape(turn.user)}</div>
+                                </div>
+                                <div class="chat-bubble-assistant">
+                                    <div class="chat-label" style="color:#2e7d32; text-align:right;">🤖 客服</div>
+                                    <div class="chat-text">{html.escape(turn.assistant)}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
 
-                    status_box.info(f"▶️ [{i+1}/{total}] {scenario.persona_name} — 多评委评测...")
-                    mj_result = evaluator.multi_judge_evaluate(dialog_result, rubric, num_judges=3)
-                    eval_result = mj_result.individual_results[-1]
-                    violation_locs = evaluator.locate_violations(dialog_result, rubric)
+                        # 双模型对比
+                        compare_result = None
+                        compare_model_name = None
+                        if compare_mode and compare_model:
+                            compare_model_name = compare_model
+                            status.update(label=f"🔀 [{i+1}/{total}] {scenario.persona_name} — {compare_model_name} 对话中...", state="running")
+                            try:
+                                orig_model = settings.target_model_name
+                                settings.target_model_name = compare_model_name
+                                try:
+                                    compare_dialog = DialogueRunner().run_dialog(
+                                        scenario=scenario, rubric=rubric, max_turns=max_turns,
+                                    )
+                                finally:
+                                    settings.target_model_name = orig_model
+                                compare_eval = evaluator.evaluate(compare_dialog, rubric)
+                                compare_result = {"dialog": compare_dialog, "evaluation": compare_eval, "model": compare_model_name}
+                            except Exception as e:
+                                st.warning(f"⚠️ 对比模型 {compare_model_name} 失败: {e}")
 
-                    report_gen.save_report(
-                        dialog_result, eval_result, rubric,
-                        task_instruction, scenario.persona_name,
-                    )
+                        status.update(label=f"📊 [{i+1}/{total}] {scenario.persona_name} — 多评委评测中...", state="running")
+                        mj_result = evaluator.multi_judge_evaluate(dialog_result, rubric, num_judges=3)
+                        eval_result = mj_result.individual_results[-1]
+                        violation_locs = evaluator.locate_violations(dialog_result, rubric)
 
-                    st.session_state.results.append({
-                        "scenario": scenario,
-                        "dialog": dialog_result,
-                        "evaluation": eval_result,
-                        "multi_judge": mj_result,
-                        "violation_locations": violation_locs,
-                    })
+                        report_gen.save_report(
+                            dialog_result, eval_result, rubric,
+                            task_instruction, scenario.persona_name,
+                        )
 
-                    pct = int(20 + (i + 1) / total * 70)
-                    overall_progress.progress(pct, text=f"✅ {scenario.persona_name} ({i+1}/{total})")
+                        st.session_state.results.append({
+                            "scenario": scenario,
+                            "dialog": dialog_result,
+                            "evaluation": eval_result,
+                            "multi_judge": mj_result,
+                            "violation_locations": violation_locs,
+                            "compare": compare_result,
+                        })
 
-                    st.markdown(render_score_card(
-                        mj_result.overall_mean, scenario.persona_name, mj_result.overall_std
-                    ), unsafe_allow_html=True)
+                        status.write(f"✅ {scenario.persona_name} — 完成")
 
-                except Exception as e:
-                    st.error(f"❌ {scenario.persona_name} 失败: {e}")
-                    continue
+                        st.markdown(render_score_card(
+                            mj_result.overall_mean, scenario.persona_name, mj_result.overall_std
+                        ), unsafe_allow_html=True)
 
-            overall_progress.progress(100, text="🎉 全部完成!")
-            status_box.success(f"🎉 完成 {len(st.session_state.results)}/{total} 个场景")
+                    except Exception as e:
+                        st.error(f"❌ {scenario.persona_name} 失败: {e}")
+                        continue
+
+            status.update(label=f"🎉 全部完成！{len(st.session_state.results)}/{total} 个场景", state="complete")
 
             # 保存到历史
             st.session_state.eval_history.append({
@@ -777,6 +800,27 @@ with tab1:
                 score = mj.overall_mean if mj else result["evaluation"].overall_score
                 score_std = mj.overall_std if mj else 0
                 st.markdown(render_score_card(score, s.persona_name, score_std, "small"), unsafe_allow_html=True)
+
+        # 双模型对比摘要
+        if any(r.get("compare") for r in st.session_state.results):
+            st.markdown("### 🔀 模型对比")
+            for idx, result in enumerate(st.session_state.results):
+                cmp = result.get("compare")
+                if not cmp:
+                    continue
+                e1 = result["evaluation"]
+                e2 = cmp["evaluation"]
+                m1 = settings.target_model_name
+                m2 = cmp["model"]
+                c1, c2, c3 = st.columns([2, 2, 1])
+                with c1:
+                    delta = e1.overall_score - e2.overall_score
+                    st.metric(f"{m1} ({result['scenario'].persona_name})", f"{e1.overall_score}分")
+                with c2:
+                    st.metric(f"{m2}", f"{e2.overall_score}分", delta=f"{delta:+.0f}" if delta != 0 else None)
+                with c3:
+                    winner = m1 if delta >= 0 else m2
+                    st.caption(f"🏆 {winner}")
 
         # 场景对比雷达图
         if len(st.session_state.results) > 1:
