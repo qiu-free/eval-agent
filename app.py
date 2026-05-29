@@ -334,6 +334,9 @@ def render_suggestions(eval_result, scenario_name):
                 suggestions.append(f"🟡 **{dim['name']}**({ds.score}/5): {ds.reason}")
     return suggestions
 
+def _fmt_time(s):
+    return f"{s:.1f}s" if s < 60 else f"{int(s//60)}m{int(s%60)}s"
+
 def generate_test_scenarios(task_instruction):
     """AI自动生成测试场景"""
     from openai import OpenAI
@@ -400,7 +403,7 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📊 评测历史")
     if st.session_state.eval_history:
-        for h in st.session_state.eval_history[-5:]:
+        for h in reversed(st.session_state.eval_history[-10:]):
             scores = h.get("scores", []) or [
                 {"persona": r.get("scenario", {}).get("persona_name", "?"),
                  "score": r.get("evaluation", {}).get("overall_score", 0)}
@@ -408,16 +411,12 @@ with st.sidebar:
             ]
             avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
             color = "#43a047" if avg_score >= 80 else ("#ef6c00" if avg_score >= 60 else "#c62828")
-            st.markdown(f"""
-            <div style="background:#f0f2ff; border-radius:10px; padding:10px 12px; margin-bottom:6px; border-left:3px solid {color};">
-                <div style="font-size:0.75rem; color:#888;">🕐 {h['time']}</div>
-                <div style="font-size:0.8rem; color:#555; margin:2px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{h.get('instruction','')[:50]}</div>
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-size:0.75rem; color:#999;">{h['count']}个场景</span>
-                    <span style="font-weight:700; color:{color}; font-size:0.9rem;">{avg_score:.0f}分</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            hid = h.get("time", "")
+            if st.button(f"📂  {hid}  {h['count']}场  {avg_score:.0f}分",
+                         key=f"hist_{hid}", use_container_width=True):
+                st.session_state.results = h["results"]
+                st.session_state.loaded_history_label = hid
+                st.rerun()
         if st.button("🗑️ 清空历史", use_container_width=True):
             st.session_state.eval_history = []
             st.session_state.results = []
@@ -679,15 +678,21 @@ with tab1:
             report_gen = ReportGenerator()
 
             # 总进度 status
+            _t0 = datetime.now()
             with st.status(f"🎭 评测中... 0/{total} 场景", expanded=True) as status:
                 for i, scenario in enumerate(selected_scenarios):
                     status.update(label=f"💬 [{i+1}/{total}] {scenario.persona_name} — 对话中...", state="running")
 
                     try:
+                        from core.dialogue_runner import Turn as _Turn
+
+                        _t0 = datetime.now()
                         dialog_result = dialogue_runner.run_dialog(
                             scenario=scenario, rubric=rubric, max_turns=max_turns,
                         )
+                        _t1 = (datetime.now() - _t0).total_seconds()
 
+                        # 流式展示对话
                         with live_area.container():
                             st.markdown(f"### 💬 {scenario.persona_name}")
                             for turn in dialog_result.turns:
@@ -701,6 +706,7 @@ with tab1:
                                     <div class="chat-text">{html.escape(turn.assistant)}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
+                        status.write(f"💬 {scenario.persona_name} — 共 {len(dialog_result.turns)} 轮对话")
 
                         # 双模型对比
                         compare_result = None
@@ -709,12 +715,25 @@ with tab1:
                             compare_model_name = compare_model
                             status.update(label=f"🔀 [{i+1}/{total}] {scenario.persona_name} — {compare_model_name} 对话中...", state="running")
                             try:
+                                # A/B 同轮对比：相同的用户对话历史，仅替换模型回复
                                 orig_model = settings.target_model_name
                                 settings.target_model_name = compare_model_name
                                 try:
-                                    compare_dialog = DialogueRunner().run_dialog(
-                                        scenario=scenario, rubric=rubric, max_turns=max_turns,
-                                    )
+                                    compare_runner = DialogueRunner()
+                                    compare_dialog = DialogResult(scenario=scenario)
+                                    compare_history: list[dict] = []
+                                    for turn in dialog_result.turns:
+                                        user_msg = turn.user
+                                        assistant_msg = compare_runner._call_target_model(
+                                            rubric, compare_history, user_msg,
+                                        )
+                                        ct = _Turn(
+                                            user=user_msg, assistant=assistant_msg,
+                                            turn_number=turn.turn_number,
+                                        )
+                                        compare_dialog.turns.append(ct)
+                                        compare_history.append({"role": "user", "content": user_msg})
+                                        compare_history.append({"role": "assistant", "content": assistant_msg})
                                 finally:
                                     settings.target_model_name = orig_model
                                 compare_eval = evaluator.evaluate(compare_dialog, rubric)
@@ -751,7 +770,8 @@ with tab1:
                         st.error(f"❌ {scenario.persona_name} 失败: {e}")
                         continue
 
-            status.update(label=f"🎉 全部完成！{len(st.session_state.results)}/{total} 个场景", state="complete")
+            elapsed_all = (datetime.now() - _t0).total_seconds()
+            status.update(label=f"🎉 全部完成！{len(st.session_state.results)}/{total} 个场景  （耗时 {_fmt_time(elapsed_all)}）", state="complete")
 
             # 保存到历史
             st.session_state.eval_history.append({
