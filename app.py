@@ -784,23 +784,37 @@ with tab1:
 
             st.balloons()
 
-            # PDF 下载按钮
+            # 导出按钮
             with st.expander("📥 导出报告", expanded=False):
-                for idx, result in enumerate(st.session_state.results):
-                    s = result["scenario"]
-                    e = result["evaluation"]
-                    d = result["dialog"]
+                c1, c2 = st.columns(2)
+                with c1:
+                    for idx, result in enumerate(st.session_state.results):
+                        s = result["scenario"]
+                        e = result["evaluation"]
+                        d = result["dialog"]
+                        try:
+                            pdf_buf = report_gen.generate_pdf(d, e, rubric, task_instruction)
+                            st.download_button(
+                                label=f"📄 {s.persona_name} PDF",
+                                data=pdf_buf,
+                                file_name=f"eval_report_{s.persona_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                                mime="application/pdf",
+                                key=f"pdf_{idx}", use_container_width=True,
+                            )
+                        except Exception:
+                            st.caption(f"⚠️ {s.persona_name} PDF失败")
+                with c2:
                     try:
-                        pdf_buf = report_gen.generate_pdf(d, e, rubric, task_instruction)
+                        xl_buf = report_gen.generate_excel(st.session_state.results)
                         st.download_button(
-                            label=f"📄 下载 {s.persona_name} PDF报告",
-                            data=pdf_buf,
-                            file_name=f"eval_report_{s.persona_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                            mime="application/pdf",
-                            key=f"pdf_{idx}",
+                            label="📊 全部场景 Excel",
+                            data=xl_buf,
+                            file_name=f"eval_report_all_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="excel_export", use_container_width=True,
                         )
                     except Exception:
-                        st.caption(f"⚠️ {s.persona_name} PDF生成失败（可能缺少reportlab）")
+                        st.caption("⚠️ Excel导出失败")
 
         except Exception as e:
             st.error(f"❌ 出错: {e}")
@@ -1267,9 +1281,55 @@ with tab3:
 
 
 # ═══════════════════════════════════════════
-# Tab 4: 系统设置
+# Tab 4: 系统设置 + 仪表盘
 # ═══════════════════════════════════════════
 with tab4:
+    # ── 评测仪表盘 ──
+    hist = st.session_state.eval_history
+    if hist:
+        st.markdown("### 📈 评测仪表盘")
+        dcols = st.columns(4)
+        total_evals = len(hist)
+        total_scenarios = sum(h.get("count", 0) for h in hist)
+        all_scores = []
+        for h in hist:
+            for r in h.get("results", []):
+                sc = r.get("evaluation", {}).get("overall_score", 0) if isinstance(r, dict) else 0
+                if isinstance(r, dict): all_scores.append(sc)
+        avg = sum(all_scores) / len(all_scores) if all_scores else 0
+        recent_scores = all_scores[-10:] if len(all_scores) >= 10 else all_scores
+        trend = "↑" if len(recent_scores) >= 2 and recent_scores[-1] > recent_scores[0] else \
+                "↓" if len(recent_scores) >= 2 and recent_scores[-1] < recent_scores[0] else "→"
+        dcols[0].metric("总评测次数", total_evals)
+        dcols[1].metric("总场景数", total_scenarios)
+        dcols[2].metric("平均分", f"{avg:.1f}", delta=trend if trend != "→" else None)
+        dcols[3].metric("最近趋势", trend, delta_color="off")
+
+        # 维度分排行
+        dim_avgs = {}
+        for d in DIMENSIONS:
+            dim_avgs[d["name"]] = {"sum": 0, "count": 0, "weight": d["weight"]}
+        for h in hist:
+            for r in h.get("results", []):
+                if not isinstance(r, dict): continue
+                ev = r.get("evaluation", {})
+                for dn, dv in dim_avgs.items():
+                    dk = next((x["key"] for x in DIMENSIONS if x["name"] == dn), None)
+                    if dk and dk in ev.get("dimensions", {}):
+                        dv["sum"] += ev["dimensions"][dk].score
+                        dv["count"] += 1
+        st.markdown("#### 各维度平均分")
+        vibar = []
+        for dn, dv in sorted(dim_avgs.items(), key=lambda x: x[1]["sum"]/(x[1]["count"] or 1), reverse=True):
+            av = dv["sum"] / dv["count"] if dv["count"] else 0
+            vibar.append({"维度": dn, "平均分": round(av, 1), "权重": f"{dv['weight']*100:.0f}%"})
+        if vibar:
+            fig = go.Figure(data=[go.Bar(x=[v["维度"] for v in vibar], y=[v["平均分"] for v in vibar],
+                                          marker_color=['#43a047' if v["平均分"]>=3.5 else '#ef6c00' if v["平均分"]>=2.5 else '#c62828' for v in vibar])])
+            fig.update_layout(height=250, margin=dict(l=0,r=0,t=0,b=0), yaxis=dict(range=[0,5.5]))
+            st.plotly_chart(fig, use_container_width=True)
+        st.divider()
+
     st.markdown("### ⚙️ 系统设置")
 
     col_a, col_b = st.columns(2)
