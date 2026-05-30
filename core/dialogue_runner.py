@@ -77,7 +77,10 @@ class DialogueRunner:
         """
         max_turns = max_turns or rubric.constraints.get("max_turns") or settings.max_turns
         if isinstance(max_turns, str):
-            max_turns = int(max_turns)
+            try:
+                max_turns = int(max_turns)
+            except ValueError:
+                max_turns = settings.max_turns
         result = DialogResult(scenario=scenario)
 
         # 对话历史

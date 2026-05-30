@@ -82,11 +82,22 @@ class TaskRubric:
         for step_data in data.get("call_flow", []):
             call_flow.append(CallFlowStep.from_dict(step_data))
 
+        # 安全清理约束中的数值字段（LLM 可能返回文字描述）
+        constraints = {}
+        for k, v in (data.get("constraints") or {}).items():
+            if k in ("max_words_per_turn", "max_turns") and isinstance(v, str):
+                try:
+                    constraints[k] = int(v)
+                except (ValueError, TypeError):
+                    constraints[k] = 0
+            else:
+                constraints[k] = v
+
         return cls(
             task_goal=data.get("task_goal", ""),
             must_do=data.get("must_do", []),
             must_not_do=data.get("must_not_do", []),
-            constraints=data.get("constraints", {}),
+            constraints=constraints,
             success_criteria=data.get("success_criteria", []),
             opening_line=data.get("opening_line", ""),
             call_flow=call_flow,
