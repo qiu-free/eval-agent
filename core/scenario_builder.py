@@ -8,7 +8,7 @@ from typing import Optional
 from openai import OpenAI
 
 from config import settings
-from core.llm_utils import safe_llm_call
+from core.llm_utils import safe_llm_call, get_llm_client
 
 
 class CallFlowStep:
@@ -188,17 +188,10 @@ class ScenarioBuilder:
     """场景构建器——解析任务指令并构建测试场景"""
 
     def __init__(self):
-        self._client = None
+        pass
 
     def _get_client(self) -> OpenAI:
-        if self._client is None:
-            kwargs = {"api_key": settings.openai_api_key}
-            if settings.llm_provider == "dashscope":
-                kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            else:
-                kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(timeout=300.0, **kwargs)
-        return self._client
+        return get_llm_client()
 
     def parse_instruction(self, instruction: str) -> TaskRubric:
         """将自然语言任务指令解析为结构化 TaskRubric"""
@@ -298,10 +291,13 @@ class ScenarioBuilder:
         if tone:
             must_do.append(f"语气要求: {tone}")
 
-        # 字数限制
+        # 字数限制（安全转换，支持"无限制"等文字描述）
         max_words = constraints.get("max_words_per_turn", 0)
         if max_words:
-            constraints["max_words_per_turn"] = int(max_words)
+            try:
+                constraints["max_words_per_turn"] = int(max_words)
+            except (ValueError, TypeError):
+                constraints["max_words_per_turn"] = 0
 
         # ── 成功标准 ──
         success_criteria = []

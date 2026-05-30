@@ -1,4 +1,4 @@
-"""自动评测器——7 维度评测对话模型表现 + 规则校验"""
+"""自动评测器——10 维度评测对话模型表现 + 规则校验"""
 
 import json
 import re
@@ -9,7 +9,7 @@ from openai import OpenAI
 from config import settings
 from core.dialogue_runner import DialogResult
 from core.scenario_builder import TaskRubric
-from core.llm_utils import safe_llm_call
+from core.llm_utils import safe_llm_call, get_llm_client
 
 
 # 评测维度配置（权重合计=1.0）
@@ -24,6 +24,25 @@ DIMENSIONS = [
     {"key": "opening_compliance", "name": "开场合规度", "weight": 0.05, "description": "开场白是否与指定模板一致"},
     {"key": "naturalness", "name": "对话自然度", "weight": 0.04, "description": "是否像真实客服/外呼"},
     {"key": "safety", "name": "安全合规性", "weight": 0.03, "description": "是否涉及隐私泄露、夸大承诺"},
+]
+
+# 多评委差异化配置：不同温度 + 不同评分视角
+JUDGE_CONFIGS = [
+    {
+        "temperature": 0.2,
+        "persona": "严格评委",
+        "bias": "你是一个严格的评委。重点关注违规、遗漏和不规范之处。宁可打低分也不放过问题。",
+    },
+    {
+        "temperature": 0.5,
+        "persona": "平衡评委",
+        "bias": "你是一个公正的评委。综合考量任务完成度和对话质量，给出均衡的评分。",
+    },
+    {
+        "temperature": 0.8,
+        "persona": "宽容评委",
+        "bias": "你是一个宽容的评委。更关注亮点和积极表现，对小瑕疵适度宽容。",
+    },
 ]
 
 # 规则检测的禁词列表（编译为正则对象）
@@ -77,19 +96,12 @@ class Evaluator:
     """自动评测器——规则评测 + LLM 评测"""
 
     def __init__(self):
-        self._client = None
+        pass
 
     def _get_client(self) -> OpenAI:
-        if self._client is None:
-            kwargs = {"api_key": settings.openai_api_key}
-            if settings.llm_provider == "dashscope":
-                kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            else:
-                kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(timeout=300.0, **kwargs)
-        return self._client
+        return get_llm_client()
 
-    def evaluate(self, dialog_result: DialogResult, rubric: TaskRubric) -> EvalResult:
+    def evaluate(self, dialog_result: DialogResult, rubric: TaskRubric, judge_config: dict = None) -> EvalResult:
         """对一次对话进行全方位评测
 
         使用多重评估机制：
@@ -100,8 +112,8 @@ class Evaluator:
         # Step 1: 规则评测
         rule_violations = self._rule_check(dialog_result, rubric)
 
-        # Step 2: LLM 评测
-        llm_result = self._llm_evaluate(dialog_result, rubric)
+        # Step 2: LLM 评测（支持差异化评委）
+        llm_result = self._llm_evaluate(dialog_result, rubric, judge_config=judge_config)
 
         # Step 3: 合并结果
         result = llm_result
@@ -171,7 +183,10 @@ class Evaluator:
         # 4. 字数限制检测（结构化指令专用）
         max_words = rubric.constraints.get("max_words_per_turn", 0)
         if isinstance(max_words, str):
-            max_words = int(max_words)
+            try:
+                max_words = int(max_words)
+            except ValueError:
+                max_words = 0
         if max_words:
             for turn in dialog_result.turns:
                 word_count = len(turn.assistant)
@@ -194,8 +209,16 @@ class Evaluator:
 
         return violations
 
-    def _llm_evaluate(self, dialog_result: DialogResult, rubric: TaskRubric) -> EvalResult:
-        """使用 LLM 进行语义层面的评测"""
+    def _llm_evaluate(
+        self, dialog_result: DialogResult, rubric: TaskRubric, judge_config: dict = None
+    ) -> EvalResult:
+        """使用 LLM 进行语义层面的评测
+
+        Args:
+            dialog_result: 对话结果
+            rubric: 评测要素
+            judge_config: 评委配置 {"temperature": ..., "persona": ..., "bias": ...}
+        """
         prompt_path = settings.prompt_dir / "evaluator.txt"
         template_text = prompt_path.read_text(encoding="utf-8")
 
@@ -205,13 +228,18 @@ class Evaluator:
         prompt = template_text.replace("{task_instruction}", instruction)
         prompt = prompt.replace("{dialog_history}", dialog_history)
 
+        # 注入评委差异化视角
+        if judge_config and judge_config.get("bias"):
+            prompt = f"[评委视角: {judge_config['persona']}]\n{judge_config['bias']}\n\n{prompt}"
+
         client = self._get_client()
+        temperature = judge_config["temperature"] if judge_config else settings.eval_temperature
 
         def _call():
             resp = client.chat.completions.create(
                 model=settings.openai_model_name,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=settings.eval_temperature,
+                temperature=temperature,
             )
             return resp.choices[0].message.content.strip()
 
@@ -555,14 +583,24 @@ class Evaluator:
     def multi_judge_evaluate(
         self, dialog_result: DialogResult, rubric: TaskRubric, num_judges: int = 3
     ) -> MultiJudgeResult:
-        """多评委一致性评分——多次评测取均值+标准差，含仲裁机制"""
+        """多评委一致性评分——差异化评委取均值+标准差，含仲裁机制
+
+        每个评委使用不同的温度和评分视角：
+        - 评委1（严格）：低温，从严打分
+        - 评委2（平衡）：中温，均衡评分
+        - 评委3（宽容）：高温，关注亮点
+        """
         import statistics
 
         results = []
-        for _ in range(num_judges):
-            results.append(self.evaluate(dialog_result, rubric))
+        for i in range(num_judges):
+            config = JUDGE_CONFIGS[i % len(JUDGE_CONFIGS)]
+            result = self.evaluate(dialog_result, rubric, judge_config=config)
+            # 评分校准
+            result = self._calibrate_score(result, dialog_result)
+            results.append(result)
 
-        # ── 仲裁机制：如果一致性差（σ>10），自动加评委 ──
+        # ── 仲裁机制：如果一致性差（σ>10），自动加评委（使用平衡评委）──
         max_arbitration = 1  # 最多仲裁1轮（速度优先）
         for arb_round in range(max_arbitration):
             overall_scores = [r.overall_score for r in results]
@@ -571,8 +609,10 @@ class Evaluator:
             current_std = statistics.stdev(overall_scores)
             if current_std < 10:  # 一致性可接受
                 break
-            # 加一个评委
-            results.append(self.evaluate(dialog_result, rubric))
+            # 加一个平衡评委
+            arb_result = self.evaluate(dialog_result, rubric, judge_config=JUDGE_CONFIGS[1])
+            arb_result = self._calibrate_score(arb_result, dialog_result)
+            results.append(arb_result)
 
         # 计算各维度的均值和标准差
         dim_means = {}
@@ -614,6 +654,38 @@ class Evaluator:
             num_judges_used=len(results),
             arbitration_triggered=len(results) > num_judges,
         )
+
+    def _calibrate_score(self, result: EvalResult, dialog_result: DialogResult) -> EvalResult:
+        """评分后处理校准——防止评分膨胀，提升区分度"""
+        num_turns = len(dialog_result.turns)
+
+        # 1. 对话轮次过少时降分（1-2轮即使没犯错也不应满分）
+        if num_turns <= 2:
+            for key in result.dimensions:
+                ds = result.dimensions[key]
+                if ds.score >= 5:
+                    ds.score = 4
+                    ds.reason += " [校准] 对话轮次过少(≤2轮)，不给满分"
+                elif ds.score == 4 and num_turns <= 1:
+                    ds.score = 3
+                    ds.reason += " [校准] 对话仅1轮"
+
+        # 2. 过于一致的评分（所有维度都是5分）触发折扣
+        all_scores = [d.score for d in result.dimensions.values()]
+        if all_scores and all(s == 5 for s in all_scores) and num_turns <= 3:
+            # 短对话全满分打9折
+            result.overall_score = result.overall_score * 0.9
+
+        # 3. 有违规但约束遵守度仍高分的校准
+        if result.violations:
+            if "constraint_adherence" in result.dimensions:
+                ds = result.dimensions["constraint_adherence"]
+                violation_count = len(result.violations)
+                if ds.score >= 4 and violation_count >= 2:
+                    ds.score = max(2, ds.score - violation_count)
+                    ds.reason += f" [校准] 检测到{violation_count}项违规"
+
+        return result
 
     def locate_violations(
         self, dialog_result: DialogResult, rubric: TaskRubric
