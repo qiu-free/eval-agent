@@ -250,13 +250,18 @@ def _save_history(history: list):
     # 只保留最近 20 条，每条只存摘要（不含完整对话）
     slim = []
     for h in history[-20:]:
+        scores = []
+        for r in h.get("results", []):
+            sc = r.get("scenario") if isinstance(r, dict) else r
+            pn = sc.persona_name if hasattr(sc, "persona_name") else (sc.get("persona_name","?") if isinstance(sc,dict) else "?")
+            ev = r.get("evaluation", {}) if isinstance(r, dict) else {}
+            ov = ev.overall_score if hasattr(ev, "overall_score") else (ev.get("overall_score",0) if isinstance(ev,dict) else 0)
+            scores.append({"persona": pn, "score": ov})
         slim.append({
             "time": h.get("time", ""),
             "count": h.get("count", 0),
             "instruction": h.get("instruction", "")[:120],
-            "scores": [{"persona": r.get("scenario", {}).get("persona_name", "?"),
-                         "score": r.get("evaluation", {}).get("overall_score", 0)}
-                        for r in h.get("results", [])],
+            "scores": scores,
         })
     HISTORY_FILE.write_text(json.dumps(slim, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -274,13 +279,26 @@ if "upload_task" not in st.session_state:
 
 # ── 工具函数 ──
 def render_radar_chart(eval_result, title="评分维度"):
-    """绘制7维雷达图"""
+    """绘制多维雷达图"""
+    # 维度简称映射（避免截断导致歧义）
+    SHORT_NAMES = {
+        "任务完成度": "任务完成",
+        "指令遵循度": "指令遵循",
+        "流程完成度": "流程完成",
+        "约束遵守度": "约束遵守",
+        "多轮一致性": "多轮一致",
+        "用户意图识别": "意图识别",
+        "知识准确性": "知识准确",
+        "开场合规度": "开场合规",
+        "对话自然度": "对话自然",
+        "安全合规性": "安全合规",
+    }
     dims = []
     scores = []
     for dim in DIMENSIONS:
         key = dim["key"]
         if key in eval_result.dimensions:
-            dims.append(dim["name"][:4])  # 短名称
+            dims.append(SHORT_NAMES.get(dim["name"], dim["name"][:4]))
             scores.append(eval_result.dimensions[key].score)
 
     fig = go.Figure(data=go.Scatterpolar(
@@ -372,6 +390,7 @@ def generate_test_scenarios(task_instruction):
         text = re.sub(r'\s*```$', '', text)
         return json.loads(text)
     except Exception as e:
+        st.warning(f"AI 生成测试场景失败: {e}")
         return {"scenarios": []}
 
 
@@ -404,11 +423,14 @@ with st.sidebar:
     st.markdown("### 📊 评测历史")
     if st.session_state.eval_history:
         for h in reversed(st.session_state.eval_history[-10:]):
-            scores = h.get("scores", []) or [
-                {"persona": r.get("scenario", {}).get("persona_name", "?"),
-                 "score": r.get("evaluation", {}).get("overall_score", 0)}
-                for r in h.get("results", [])
-            ]
+            scores = h.get("scores", [])
+            if not scores:
+                for r in h.get("results", []):
+                    sc = r.get("scenario") if isinstance(r, dict) else r
+                    pn = sc.persona_name if hasattr(sc, "persona_name") else (sc.get("persona_name","?") if isinstance(sc,dict) else "?")
+                    ev = r.get("evaluation", {}) if isinstance(r, dict) else {}
+                    ov = ev.overall_score if hasattr(ev, "overall_score") else (ev.get("overall_score",0) if isinstance(ev,dict) else 0)
+                    scores.append({"persona": pn, "score": ov})
             avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
             color = "#43a047" if avg_score >= 80 else ("#ef6c00" if avg_score >= 60 else "#c62828")
             hid = h.get("time", "")

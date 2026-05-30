@@ -67,7 +67,16 @@ class TaskRubric:
         self.task_goal = task_goal
         self.must_do = must_do or []
         self.must_not_do = must_not_do or []
-        self.constraints = constraints or {}
+        # 终极兜底：构造函数中清洗数值字段
+        self.constraints = {}
+        for ck, cv in (constraints or {}).items():
+            if ck in ("max_words_per_turn", "max_turns") and isinstance(cv, str):
+                try:
+                    self.constraints[ck] = int(cv)
+                except (ValueError, TypeError):
+                    self.constraints[ck] = 0
+            else:
+                self.constraints[ck] = cv
         self.success_criteria = success_criteria or []
         # ── 结构化指令新增字段 ──
         self.opening_line = opening_line          # 开场白模板
