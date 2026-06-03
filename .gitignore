@@ -18,7 +18,9 @@ build/
 
 # Data
 data/*.db
+data/tasks.json
 outputs/reports/*
+outputs/eval_history.json
 
 # OS
 .DS_Store
