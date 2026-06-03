@@ -1,5 +1,8 @@
 """EvalAgent Streamlit 前端——输入指令、运行评测、查看报告"""
 
+import sys
+sys.dont_write_bytecode = True
+
 import html
 import json
 import traceback
@@ -16,6 +19,7 @@ from core.scenario_builder import ScenarioBuilder
 from core.dialogue_runner import DialogueRunner
 from core.evaluator import Evaluator, DIMENSIONS, MultiJudgeResult
 from core.report_generator import ReportGenerator
+from core.i18n_utils import _, _f, set_language, get_language
 
 # ── 页面配置 ──
 st.set_page_config(
@@ -222,7 +226,7 @@ st.markdown("""
 st.markdown("""
 <div class="hero-banner">
     <h1>🎯 EvalAgent</h1>
-    <p class="subtitle">多轮对话自动评测系统 · 让模型评测像呼吸一样简单</p>
+    <p class="subtitle">多轮对话自动评测系统 · 让模型评测像呼吸一样简单</p>  <!-- 保留中文固定 -->
     <div class="hero-stats">
         <div class="hero-stat"><div class="stat-num">10维</div><div class="stat-label">评测体系</div></div>
         <div class="hero-stat"><div class="stat-num">6种</div><div class="stat-label">用户画像</div></div>
@@ -276,6 +280,8 @@ if "generated_scenarios" not in st.session_state:
     st.session_state.generated_scenarios = None
 if "upload_task" not in st.session_state:
     st.session_state.upload_task = None
+if "loaded_history_label" not in st.session_state:
+    st.session_state.loaded_history_label = ""
 
 # ── 工具函数 ──
 def render_radar_chart(eval_result, title="评分维度"):
@@ -404,7 +410,18 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("⚙️ API 配置", expanded=True):
+    # ── 语言切换 ──
+    lang = st.selectbox(_("🌐 语言/Language"), ["中文", "English"],
+                        index=0 if globals().get("get_language", lambda:"zh")()=="zh" else 1)
+    if lang == "English":
+        from core.i18n_utils import set_language as _sl, get_language as _gl
+        if _gl() != "en": _sl("en"); st.rerun()
+    elif lang == "中文":
+        from core.i18n_utils import set_language as _sl, get_language as _gl
+        if _gl() != "zh": _sl("zh"); st.rerun()
+    st.divider()
+
+    with st.expander(_("⚙️ API 配置"), expanded=True):
         api_key = st.text_input("API Key", type="password",
                                 value=settings.openai_api_key or "",
                                 placeholder="sk-...", label_visibility="collapsed")
@@ -434,9 +451,11 @@ with st.sidebar:
             avg_score = sum(s["score"] for s in scores) / len(scores) if scores else 0
             color = "#43a047" if avg_score >= 80 else ("#ef6c00" if avg_score >= 60 else "#c62828")
             hid = h.get("time", "")
-            if st.button(f"📂  {hid}  {h['count']}场  {avg_score:.0f}分",
-                         key=f"hist_{hid}", use_container_width=True):
-                st.session_state.results = h["results"]
+            has_results = bool(h.get("results"))
+            disabled = not has_results
+            if st.button(f"📂  {hid}  {h.get('count',0)}场  {avg_score:.0f}分" + (" 📄" if has_results else " ⚠️"),
+                         key=f"hist_{hid}", use_container_width=True, disabled=disabled):
+                st.session_state.results = h.get("results", [])
                 st.session_state.loaded_history_label = hid
                 st.rerun()
         if st.button("🗑️ 清空历史", use_container_width=True):
@@ -1175,6 +1194,15 @@ with tab3:
     if not st.session_state.results:
         st.info("💡 先在「模拟评测」或「上传评测」运行一次")
     else:
+        if st.session_state.get("loaded_history_label"):
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.caption(f"📂 正在查看历史记录: {st.session_state.loaded_history_label}")
+            with c2:
+                if st.button("← 返回当前结果", use_container_width=True):
+                    st.session_state.results = []
+                    st.session_state.loaded_history_label = ""
+                    st.rerun()
         # 总体仪表盘
         st.markdown("### 📊 综合仪表盘")
         cols = st.columns(len(st.session_state.results))
@@ -1316,8 +1344,10 @@ with tab4:
         all_scores = []
         for h in hist:
             for r in h.get("results", []):
-                sc = r.get("evaluation", {}).get("overall_score", 0) if isinstance(r, dict) else 0
-                if isinstance(r, dict): all_scores.append(sc)
+                if isinstance(r, dict):
+                    ev = r.get("evaluation") or {}
+                    ov = ev.overall_score if hasattr(ev, "overall_score") else (ev.get("overall_score",0) if isinstance(ev,dict) else 0)
+                    all_scores.append(ov)
         avg = sum(all_scores) / len(all_scores) if all_scores else 0
         recent_scores = all_scores[-10:] if len(all_scores) >= 10 else all_scores
         trend = "↑" if len(recent_scores) >= 2 and recent_scores[-1] > recent_scores[0] else \
@@ -1334,11 +1364,12 @@ with tab4:
         for h in hist:
             for r in h.get("results", []):
                 if not isinstance(r, dict): continue
-                ev = r.get("evaluation", {})
+                ev = r.get("evaluation") or {}
+                dims = ev.dimensions if hasattr(ev, "dimensions") else (ev.get("dimensions", {}) if isinstance(ev, dict) else {})
                 for dn, dv in dim_avgs.items():
                     dk = next((x["key"] for x in DIMENSIONS if x["name"] == dn), None)
-                    if dk and dk in ev.get("dimensions", {}):
-                        dv["sum"] += ev["dimensions"][dk].score
+                    if dk and dk in dims:
+                        dv["sum"] += dims[dk].score if hasattr(dims[dk], "score") else (dims[dk].get("score",0) if isinstance(dims[dk], dict) else 0)
                         dv["count"] += 1
         st.markdown("#### 各维度平均分")
         vibar = []
