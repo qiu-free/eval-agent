@@ -15,6 +15,19 @@ import plotly.express as px
 
 from config import settings
 from core.dialogue_runner import DialogResult, Turn
+
+# ── 从 Streamlit Cloud Secrets 加载 API Key（部署用）──
+import streamlit as _st_secrets
+try:
+    if not settings.openai_api_key:
+        _s = _st_secrets.secrets
+        if _s.get("openai_api_key"):
+            settings.openai_api_key = _s["openai_api_key"]
+        if _s.get("openai_api_base"):
+            settings.openai_api_base = _s["openai_api_base"]
+except Exception:
+    pass
+del _st_secrets
 from core.scenario_builder import ScenarioBuilder
 from core.dialogue_runner import DialogueRunner
 from core.evaluator import Evaluator, DIMENSIONS, MultiJudgeResult
