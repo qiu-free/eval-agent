@@ -65,8 +65,10 @@ def evaluate(req: EvalRequest):
                     max_turns=req.max_turns,
                 )
 
-                # 评测
-                eval_result = evaluator.evaluate(dialog_result, rubric)
+                # 多评委评测（与 Streamlit 端一致）
+                mj_result = evaluator.multi_judge_evaluate(dialog_result, rubric, num_judges=3)
+                eval_result = mj_result.individual_results[-1]
+                violation_locs = evaluator.locate_violations(dialog_result, rubric)
 
                 # 保存报告
                 report_gen.save_report(
@@ -85,7 +87,10 @@ def evaluate(req: EvalRequest):
                         ],
                     },
                     "evaluation": {
-                        "overall_score": eval_result.overall_score,
+                        "overall_score": mj_result.overall_mean,
+                        "overall_std": mj_result.overall_std,
+                        "num_judges": mj_result.num_judges_used,
+                        "arbitration_triggered": mj_result.arbitration_triggered,
                         "dimensions": {
                             dim["name"]: {
                                 "score": eval_result.dimensions.get(dim["key"], DimensionScore(0, "")).score,
@@ -93,9 +98,14 @@ def evaluate(req: EvalRequest):
                             }
                             for dim in DIMENSIONS
                         },
-                        "violations": eval_result.violations,
-                        "summary": eval_result.summary,
+                        "violations": mj_result.violations,
+                        "good_points": mj_result.good_points,
+                        "summary": mj_result.summary,
                     },
+                    "violation_locations": {
+                        k: [{"turn": t, "role": r, "text": s} for t, r, s in v]
+                        for k, v in violation_locs.items()
+                    } if violation_locs else {},
                 })
             except Exception as e:
                 results.append({

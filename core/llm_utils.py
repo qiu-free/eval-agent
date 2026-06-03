@@ -1,10 +1,37 @@
-"""LLM 调用工具——自动重试 + 指数退避 + 降级策略"""
+"""LLM 调用工具——自动重试 + 指数退避 + 降级策略 + 共享客户端"""
 
 import time
 import logging
 from typing import TypeVar, Callable, Any
 
+from openai import OpenAI
+
 logger = logging.getLogger("eval-agent")
+
+# ── 共享客户端池（单例，避免重复创建）──
+_shared_clients: dict[str, OpenAI] = {}
+
+
+def get_llm_client(provider: str = None) -> OpenAI:
+    """获取共享的 OpenAI 客户端（单例模式）
+
+    Args:
+        provider: LLM 提供商，None 时使用 config 默认值
+
+    Returns:
+        OpenAI 客户端实例
+    """
+    from config import settings
+
+    provider = provider or settings.llm_provider
+    if provider not in _shared_clients:
+        kwargs = {"api_key": settings.openai_api_key, "timeout": 300.0}
+        if provider == "dashscope":
+            kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        else:
+            kwargs["base_url"] = settings.openai_api_base
+        _shared_clients[provider] = OpenAI(**kwargs)
+    return _shared_clients[provider]
 
 T = TypeVar("T")
 FALLBACK = TypeVar("FALLBACK")

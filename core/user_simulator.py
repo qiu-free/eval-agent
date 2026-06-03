@@ -4,24 +4,17 @@ from openai import OpenAI
 
 from config import settings
 from core.scenario_builder import TaskRubric
-from core.llm_utils import safe_llm_call
+from core.llm_utils import safe_llm_call, get_llm_client
 
 
 class UserSimulator:
     """用户模拟器：扮演不同类型的用户与模型对话"""
 
     def __init__(self):
-        self._client = None
+        pass
 
     def _get_client(self) -> OpenAI:
-        if self._client is None:
-            kwargs = {"api_key": settings.openai_api_key}
-            if settings.llm_provider == "dashscope":
-                kwargs["base_url"] = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            else:
-                kwargs["base_url"] = settings.openai_api_base
-            self._client = OpenAI(timeout=300.0, **kwargs)
-        return self._client
+        return get_llm_client()
 
     def generate_response(
         self,
