@@ -8,10 +8,10 @@ import json
 import traceback
 import re
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 
 from config import settings
 from core.dialogue_runner import DialogResult, Turn
@@ -28,10 +28,12 @@ try:
 except Exception:
     pass
 del _st_secrets
-from core.scenario_builder import ScenarioBuilder
+from core.scenario_builder import ScenarioBuilder, Scenario
 from core.dialogue_runner import DialogueRunner
 from core.evaluator import Evaluator, DIMENSIONS, MultiJudgeResult
 from core.report_generator import ReportGenerator
+from core.llm_utils import safe_llm_call, get_llm_client
+from core.file_parser import parse_file, ParseResult
 from core.i18n_utils import _, _f, set_language, get_language
 
 # ── 页面配置 ──
@@ -42,198 +44,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── CSS 样式 ──
-st.markdown("""
-<style>
-    /* ── 全局背景 ── */
-    .stApp { background: linear-gradient(180deg, #f8f9ff 0%, #f0f2ff 30%, #ffffff 100%); }
-    section[data-testid="stSidebar"] { background: linear-gradient(180deg, #fafbff 0%, #f0f2ff 50%, #e8ecfa 100%); }
-    section[data-testid="stSidebar"] * { color: #333 !important; }
-    section[data-testid="stSidebar"] h3, section[data-testid="stSidebar"] label { color: #1a1a2e !important; font-weight: 600 !important; }
-    section[data-testid="stSidebar"] input, section[data-testid="stSidebar"] select { color: #1a1a2e !important; background: #ffffff !important; border: 1px solid #d0d5e0 !important; border-radius: 8px !important; }
-    section[data-testid="stSidebar"] .st-caption { color: #777 !important; }
-    section[data-testid="stSidebar"] button { background: linear-gradient(135deg, #667eea, #764ba2) !important; color: white !important; border: none !important; }
-    section[data-testid="stSidebar"] hr { border-color: #d0d5e0 !important; }
-
-    /* ── Hero Banner ── */
-    .hero-banner {
-        background: linear-gradient(135deg, #0c0c2d 0%, #1a1050 30%, #2d1b69 60%, #1a1050 100%);
-        border-radius: 20px; padding: 28px 36px; margin-bottom: 20px;
-        position: relative; overflow: hidden;
-        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.25);
-    }
-    .hero-banner::before {
-        content: ''; position: absolute; top: -50%; right: -20%;
-        width: 400px; height: 400px;
-        background: radial-gradient(circle, rgba(102,126,234,0.3) 0%, transparent 70%);
-        border-radius: 50%;
-    }
-    .hero-banner::after {
-        content: ''; position: absolute; bottom: -30%; left: -10%;
-        width: 300px; height: 300px;
-        background: radial-gradient(circle, rgba(118,75,162,0.25) 0%, transparent 70%);
-        border-radius: 50%;
-    }
-    .hero-banner h1 {
-        font-size: 2.6rem; font-weight: 800; color: #ffffff;
-        margin-bottom: 4px; position: relative; z-index: 1;
-        letter-spacing: -0.5px;
-    }
-    .hero-banner .subtitle {
-        font-size: 1rem; color: rgba(255,255,255,0.7);
-        position: relative; z-index: 1; margin-bottom: 14px;
-    }
-    .hero-stats { display: flex; gap: 20px; position: relative; z-index: 1; flex-wrap: wrap; }
-    .hero-stat {
-        background: rgba(255,255,255,0.1); backdrop-filter: blur(10px);
-        border-radius: 12px; padding: 10px 18px;
-        border: 1px solid rgba(255,255,255,0.15);
-        text-align: center; min-width: 90px;
-    }
-    .hero-stat .stat-num { font-size: 1.3rem; font-weight: 800; color: #8b9cf7; }
-    .hero-stat .stat-label { font-size: 0.7rem; color: rgba(255,255,255,0.6); }
-
-    /* ── Section Cards ── */
-    .section-card {
-        background: #ffffff; border-radius: 16px; padding: 20px 24px;
-        border: 1px solid #e8eaf0; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-        margin-bottom: 16px; transition: box-shadow 0.2s;
-    }
-    .section-card:hover { box-shadow: 0 4px 20px rgba(102,126,234,0.1); }
-    .section-card .card-title {
-        font-size: 1rem; font-weight: 700; color: #1a1a2e;
-        margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
-    }
-
-    /* ── Persona Cards ── */
-    .persona-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .persona-card {
-        border-radius: 12px; padding: 12px; text-align: center;
-        border: 2px solid #e8eaf0; cursor: pointer;
-        transition: all 0.2s; background: #fafbfc;
-    }
-    .persona-card:hover { border-color: #667eea; transform: translateY(-1px); }
-    .persona-card.selected {
-        border-color: #667eea; background: linear-gradient(135deg, #667eea10, #764ba210);
-        box-shadow: 0 0 0 3px rgba(102,126,234,0.15);
-    }
-    .persona-card .icon { font-size: 1.4rem; }
-    .persona-card .name { font-size: 0.8rem; font-weight: 700; color: #333; margin-top: 4px; }
-
-    /* ── Score Cards ── */
-    .score-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 16px; padding: 20px; color: white; text-align: center;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    }
-    .score-card .score-value { font-size: 3rem; font-weight: 800; line-height: 1; }
-    .score-card .score-label { font-size: 0.9rem; opacity: 0.9; }
-    .score-card .score-std { font-size: 1rem; opacity: 0.7; }
-
-    /* ── Dimension Cards ── */
-    .dim-card {
-        background: white; border-radius: 12px; padding: 12px 16px;
-        border: 1px solid #eee; margin-bottom: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .dim-card .dim-name { font-weight: 600; font-size: 0.85rem; color: #333; }
-    .dim-card .dim-score { font-size: 1.2rem; font-weight: 700; }
-    .dim-card .dim-reason { font-size: 0.75rem; color: #888; margin-top: 4px; }
-
-    /* ── Chat Bubbles ── */
-    .chat-bubble-user {
-        background: #e8f4fd; border-radius: 16px 16px 16px 4px;
-        padding: 10px 16px; margin-bottom: 8px; max-width: 85%;
-        border-left: 3px solid #1976d2;
-    }
-    .chat-bubble-assistant {
-        background: #e8fde8; border-radius: 16px 16px 4px 16px;
-        padding: 10px 16px; margin-bottom: 8px; max-width: 85%; margin-left: auto;
-        border-right: 3px solid #2e7d32;
-    }
-    .chat-label { font-size: 0.75rem; font-weight: 600; margin-bottom: 2px; }
-    .chat-text { font-size: 0.95rem; line-height: 1.5; color: #1a1a1a; }
-
-    /* ── Progress ── */
-    .stProgress > div > div > div > div { background-image: linear-gradient(90deg, #667eea, #764ba2); }
-
-    /* ── Badges ── */
-    .badge {
-        display: inline-block; padding: 2px 10px; border-radius: 20px;
-        font-size: 0.75rem; font-weight: 600; margin-right: 4px;
-    }
-    .badge-green { background: #e8fde8; color: #2e7d32; }
-    .badge-red { background: #fde8e8; color: #c62828; }
-    .badge-yellow { background: #fff8e1; color: #f57f17; }
-    .badge-blue { background: #e3f2fd; color: #1565c0; }
-    .badge-purple { background: #f3e5f5; color: #7b1fa2; }
-
-    .suggestion-card {
-        background: #fff8e1; border-radius: 12px; padding: 16px;
-        border-left: 4px solid #ffa000; margin: 8px 0;
-    }
-    .innovation-badge {
-        display: inline-block; padding: 4px 14px; border-radius: 20px;
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        color: white; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.5px;
-    }
-
-    /* ── Input Mode Switch ── */
-    .mode-radio { margin-bottom: 12px; }
-    .mode-radio label { font-weight: 600 !important; }
-
-    /* ── Run Button ── */
-    .stButton > button[data-baseweb="button"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important; border: none !important; border-radius: 12px !important;
-        padding: 10px 24px !important; font-weight: 700 !important; font-size: 1rem !important;
-        box-shadow: 0 4px 15px rgba(102,126,234,0.4) !important;
-        transition: all 0.2s !important;
-    }
-    .stButton > button[data-baseweb="button"]:hover {
-        transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102,126,234,0.5) !important;
-    }
-
-    /* ── Tab bar ── */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px; background: transparent; border-bottom: 2px solid #e8eaf0;
-        padding-bottom: 0;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 10px 10px 0 0; padding: 10px 20px;
-        font-weight: 600; font-size: 0.9rem; background: transparent;
-        border: none; color: #888;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background: linear-gradient(135deg, #667eea15, #764ba215);
-        color: #667eea; border-bottom: 3px solid #667eea;
-    }
-
-    /* ── Feature card ── */
-    .feature-card {
-        background: white; border-radius: 14px; padding: 18px;
-        border: 1px solid #e8eaf0; box-shadow: 0 2px 8px rgba(0,0,0,0.03);
-        text-align: center; transition: all 0.2s;
-    }
-    .feature-card:hover { box-shadow: 0 4px 16px rgba(102,126,234,0.1); transform: translateY(-2px); }
-    .feature-card .feat-icon { font-size: 2rem; margin-bottom: 6px; }
-    .feature-card .feat-title { font-weight: 700; font-size: 0.9rem; color: #1a1a2e; margin-bottom: 4px; }
-    .feature-card .feat-desc { font-size: 0.75rem; color: #888; line-height: 1.4; }
-
-    /* ── Tip banner ── */
-    .tip-banner {
-        background: linear-gradient(135deg, #667eea08, #764ba208);
-        border-radius: 12px; padding: 10px 16px; margin-bottom: 8px;
-        border-left: 3px solid #667eea; font-size: 0.85rem;
-    }
-
-    /* ── Divider ── */
-    .fancy-divider {
-        height: 1px; background: linear-gradient(90deg, transparent, #e0e0e0, transparent);
-        margin: 20px 0; border: none;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ── CSS 样式（从外部文件加载，可被浏览器缓存）──
+_CSS_PATH = Path(__file__).parent / "static" / "styles.css"
+st.markdown(f"<style>{_CSS_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
 # ── Hero Banner ──
 st.markdown("""
@@ -251,7 +64,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── 历史持久化工具 ──
-from pathlib import Path
 HISTORY_FILE = Path(__file__).parent / "outputs" / "eval_history.json"
 
 def _load_history():
@@ -297,21 +109,26 @@ if "loaded_history_label" not in st.session_state:
     st.session_state.loaded_history_label = ""
 
 # ── 工具函数 ──
+# 维度简称映射（避免截断导致歧义）
+SHORT_NAMES = {
+    "任务完成度": "任务完成",
+    "指令遵循度": "指令遵循",
+    "流程完成度": "流程完成",
+    "约束遵守度": "约束遵守",
+    "多轮一致性": "多轮一致",
+    "用户意图识别": "意图识别",
+    "知识准确性": "知识准确",
+    "开场合规度": "开场合规",
+    "对话自然度": "对话自然",
+    "安全合规性": "安全合规",
+}
+
+# 雷达图配色方案
+RADAR_COLORS = ['#667eea', '#43a047', '#ef6c00', '#c62828', '#8e24aa', '#00acc1']
+
+
 def render_radar_chart(eval_result, title="评分维度"):
-    """绘制多维雷达图"""
-    # 维度简称映射（避免截断导致歧义）
-    SHORT_NAMES = {
-        "任务完成度": "任务完成",
-        "指令遵循度": "指令遵循",
-        "流程完成度": "流程完成",
-        "约束遵守度": "约束遵守",
-        "多轮一致性": "多轮一致",
-        "用户意图识别": "意图识别",
-        "知识准确性": "知识准确",
-        "开场合规度": "开场合规",
-        "对话自然度": "对话自然",
-        "安全合规性": "安全合规",
-    }
+    """绘制单场景多维雷达图"""
     dims = []
     scores = []
     for dim in DIMENSIONS:
@@ -337,6 +154,51 @@ def render_radar_chart(eval_result, title="评分维度"):
         height=300,
         paper_bgcolor='rgba(0,0,0,0)',
         font=dict(size=11),
+    )
+    return fig
+
+
+def render_comparison_radar_chart(results: list, max_scenarios: int = None, height: int = 400) -> go.Figure:
+    """绘制多场景对比雷达图
+
+    Args:
+        results: 结果列表，每项包含 "scenario" 和 "evaluation" 键
+        max_scenarios: 最大场景数（None 表示全部）
+        height: 图表高度
+
+    Returns:
+        Plotly Figure 对象
+    """
+    items = results[:max_scenarios] if max_scenarios else results
+    fig = go.Figure()
+
+    for idx, result in enumerate(items):
+        e = result["evaluation"]
+        s = result["scenario"]
+        dims = []
+        scores = []
+        for dim in DIMENSIONS:
+            key = dim["key"]
+            if key in e.dimensions:
+                dims.append(SHORT_NAMES.get(dim["name"], dim["name"][:4]))
+                scores.append(e.dimensions[key].score)
+        if not scores:
+            continue
+        name = s.persona_name if hasattr(s, 'persona_name') else str(s)
+        fig.add_trace(go.Scatterpolar(
+            r=scores + [scores[0]],
+            theta=dims + [dims[0]],
+            name=name,
+            fill='toself',
+            line=dict(color=RADAR_COLORS[idx % len(RADAR_COLORS)], width=2),
+        ))
+
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
+        legend=dict(orientation="h", y=-0.15),
+        height=height,
+        margin=dict(l=60, r=60, t=10, b=60),
+        paper_bgcolor='rgba(0,0,0,0)',
     )
     return fig
 
@@ -374,13 +236,25 @@ def render_suggestions(eval_result, scenario_name):
 def _fmt_time(s):
     return f"{s:.1f}s" if s < 60 else f"{int(s//60)}m{int(s%60)}s"
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_scenarios_cached():
+    """缓存场景加载，避免每次 Streamlit 重执行都读取磁盘"""
+    sb = ScenarioBuilder()
+    return [s.to_dict() for s in sb.load_scenarios()]
+
+def _dicts_to_scenarios(dicts: list) -> list:
+    """将缓存的字典列表转换为 Scenario 对象列表"""
+    return [Scenario(
+        persona_id=d["persona_id"],
+        persona_name=d["persona_name"],
+        persona_description=d["description"],
+        behavior=d["behavior"],
+        test_goal=d["test_goal"],
+    ) for d in dicts]
+
 def generate_test_scenarios(task_instruction):
-    """AI自动生成测试场景"""
-    from openai import OpenAI
-    client = OpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_api_base,
-    )
+    """AI自动生成测试场景（使用共享客户端 + 自动重试）"""
+    client = get_llm_client()
     prompt = f"""基于以下任务指令，生成 4 个测试场景的用户画像和行为模式。
 
 任务指令：{task_instruction}
@@ -398,13 +272,20 @@ def generate_test_scenarios(task_instruction):
 }}
 
 要求场景多样化、有针对性，覆盖成功路径和边缘情况。"""
-    try:
+
+    def _call():
         resp = client.chat.completions.create(
             model=settings.openai_model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.8,
         )
-        text = resp.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
+
+    try:
+        text = safe_llm_call(_call, label="场景生成", fallback="")
+        if not text:
+            st.warning("AI 生成测试场景失败: 空响应")
+            return {"scenarios": []}
         text = re.sub(r'^```(?:json)?\s*', '', text)
         text = re.sub(r'\s*```$', '', text)
         return json.loads(text)
@@ -425,13 +306,11 @@ with st.sidebar:
 
     # ── 语言切换 ──
     lang = st.selectbox(_("🌐 语言/Language"), ["中文", "English"],
-                        index=0 if globals().get("get_language", lambda:"zh")()=="zh" else 1)
+                        index=0 if get_language() == "zh" else 1)
     if lang == "English":
-        from core.i18n_utils import set_language as _sl, get_language as _gl
-        if _gl() != "en": _sl("en"); st.rerun()
+        if get_language() != "en": set_language("en"); st.rerun()
     elif lang == "中文":
-        from core.i18n_utils import set_language as _sl, get_language as _gl
-        if _gl() != "zh": _sl("zh"); st.rerun()
+        if get_language() != "zh": set_language("zh"); st.rerun()
     st.divider()
 
     with st.expander(_("⚙️ API 配置"), expanded=True):
@@ -573,7 +452,7 @@ with tab1:
     st.markdown('<div class="card-title">🎭 测试场景配置</div>', unsafe_allow_html=True)
 
     scenario_builder = ScenarioBuilder()
-    all_scenarios = scenario_builder.load_scenarios()
+    all_scenarios = _dicts_to_scenarios(_load_scenarios_cached())
 
     # 构建带图标的选项标签
     persona_icons = {
@@ -738,8 +617,6 @@ with tab1:
                     status.update(label=f"💬 [{i+1}/{total}] {scenario.persona_name} — 对话中...", state="running")
 
                     try:
-                        from core.dialogue_runner import Turn as _Turn
-
                         _t0 = datetime.now()
                         dialog_result = dialogue_runner.run_dialog(
                             scenario=scenario, rubric=rubric, max_turns=max_turns,
@@ -913,25 +790,7 @@ with tab1:
         # 场景对比雷达图
         if len(st.session_state.results) > 1:
             st.markdown("#### 📈 场景对比")
-            fig = go.Figure()
-            colors = ['#667eea', '#43a047', '#ef6c00', '#c62828', '#8e24aa', '#00acc1']
-            for idx, result in enumerate(st.session_state.results):
-                s = result["scenario"]
-                e = result["evaluation"]
-                dims = [dim["name"][:4] for dim in DIMENSIONS if dim["key"] in e.dimensions]
-                scores = [e.dimensions[dim["key"]].score for dim in DIMENSIONS if dim["key"] in e.dimensions]
-                fig.add_trace(go.Scatterpolar(
-                    r=scores + [scores[0]],
-                    theta=dims + [dims[0]],
-                    name=s.persona_name,
-                    line=dict(color=colors[idx % len(colors)], width=2),
-                ))
-            fig.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-                legend=dict(orientation="h", y=-0.1),
-                height=350, margin=dict(l=40, r=40, t=10, b=40),
-                paper_bgcolor='rgba(0,0,0,0)',
-            )
+            fig = render_comparison_radar_chart(st.session_state.results, height=350)
             st.plotly_chart(fig, use_container_width=True)
 
 
@@ -949,142 +808,31 @@ with tab2:
         file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "json"
 
         try:
-            file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "json"
             file_bytes = uploaded_file.read()
-            raw_text = file_bytes.decode("utf-8-sig") if file_ext != "xlsx" else ""
+            parse_result = parse_file(file_bytes, file_ext)
+            task_instruction = parse_result.task_instruction
 
-            # ── 字段名归一化 ──
-            def normalize_turn(t: dict) -> tuple:
-                role_keys = ["role", "speaker", "from", "sender", "说话人"]
-                content_keys = ["content", "text", "message", "msg", "utterance", "话", "text_content"]
-                role, content = "", ""
-                for k in role_keys:
-                    if k in t and t[k]:
-                        v = str(t[k]).strip().lower()
-                        if v in ("user", "用户", "u", "human", "顾客", "客户"): role = "user"
-                        elif v in ("assistant", "客服", "a", "bot", "agent", "model"): role = "assistant"
-                        break
-                for k in content_keys:
-                    if k in t and t[k]:
-                        content = str(t[k]).strip()
-                        break
-                return role, content
+            # ── XLSX 指令集模式 ──
+            if parse_result.instruction_set:
+                instructions = parse_result.instruction_set
+                st.success(f"✅ 已解析 {len(instructions)} 条任务指令")
+                for idx, instr in enumerate(instructions):
+                    label = instr.split("\n")[0][:60].strip().strip("#").strip() or f"指令 {idx+1}"
+                    if st.button(f"🚀 评测指令{idx+1}: {label}", key=f"eval_instr_{idx}", use_container_width=True):
+                        st.session_state.upload_task = instr
+                        st.session_state.running = True
+                        st.session_state.results = []
+                        st.rerun()
+                st.info("👆 选择一条指令，系统将自动评测（请在下方查看进度和结果）")
 
-            def parse_turns(item) -> list[dict]:
-                if isinstance(item, list):
-                    if all(isinstance(x, str) for x in item):
-                        return [{"role": "user" if i % 2 == 0 else "assistant", "content": x} for i, x in enumerate(item)]
-                    return [{"role": r, "content": c} for r, c in [normalize_turn(t) for t in item if isinstance(t, dict)] if r and c]
-                if isinstance(item, dict):
-                    for key in ["turns", "messages", "dialog", "conversation", "history", "对话", "对话记录"]:
-                        if key in item: return parse_turns(item[key])
-                    r, c = normalize_turn(item)
-                    return [{"role": r, "content": c}] if r and c else []
-                return []
+            # ── 普通对话模式 ──
+            dialogs_data = [{"scenario_label": d.scenario_label, "turns": d.turns} for d in parse_result.dialogs]
 
-            def extract_task_instruction(data) -> str:
-                for key in ["task_instruction", "instruction", "task", "prompt", "system_prompt", "任务", "任务指令", "指令"]:
-                    if key in data and isinstance(data[key], str) and len(data[key]) > 10:
-                        return data[key]
-                return ""
-
-            def extract_label(item, idx):
-                if isinstance(item, dict):
-                    for key in ["scenario_label", "scenario", "label", "name", "场景", "type"]:
-                        if key in item and item[key]: return str(item[key])
-                return f"场景 {idx+1}"
-
-            # 解析
-            dialogs_data = []
-            task_instruction = ""
-
-            if file_ext == "csv":
-                import csv, io
-                rows = list(csv.DictReader(io.StringIO(raw_text)))
-                if rows:
-                    dk = next((k for k in ["dialog_id","dialog","session","会话","id","conversation_id"] if k in rows[0]), None)
-                    tk = next((k for k in ["task_instruction","instruction","task","任务","任务指令"] if k in rows[0]), None)
-                    if tk: task_instruction = rows[0].get(tk, "")
-                    if dk:
-                        from itertools import groupby
-                        for gid, group in groupby(rows, lambda r: r.get(dk, "")):
-                            turns = [{"role": r, "content": c} for r, c in [normalize_turn(r) for r in list(group)] if r and c]
-                            if turns: dialogs_data.append({"scenario_label": gid or "对话", "turns": turns})
-                    else:
-                        turns = [{"role": r, "content": c} for r, c in [normalize_turn(r) for r in rows] if r and c]
-                        if turns: dialogs_data.append({"scenario_label": "对话", "turns": turns})
-
-            elif file_ext == "jsonl":
-                for idx, line in enumerate([l for l in raw_text.split("\n") if l.strip()]):
-                    item = json.loads(line)
-                    turns = parse_turns(item)
-                    if turns:
-                        ti = extract_task_instruction(item)
-                        if ti and not task_instruction: task_instruction = ti
-                        dialogs_data.append({"scenario_label": extract_label(item, idx), "turns": turns})
-
-            elif file_ext == "xlsx":
-                import openpyxl as _xl
-                import io as _io
-                wb = _xl.load_workbook(_io.BytesIO(file_bytes), read_only=True)
-                ws = wb.active
-                rlist = list(ws.iter_rows(values_only=True))
-                if rlist:
-                    hdr = [str(h).lower() if h else "" for h in rlist[0]]
-                    drows = [dict(zip(hdr, r)) for r in rlist[1:] if any(c is not None for c in r)]
-                    if drows:
-                        is_instr = any(k in hdr for k in ["任务指令示例", "instruction_example", "task_instruction", "任务指令"])
-                        if is_instr:
-                            instructions = []
-                            ik = next((k for k in ["任务指令示例", "任务指令", "instruction", "task_instruction"] if k in hdr), None)
-                            for r in drows:
-                                if ik and r.get(ik) and str(r[ik]).strip():
-                                    instructions.append(str(r[ik]))
-                            if instructions:
-                                st.success(f"✅ 已解析 {len(instructions)} 条任务指令")
-                                for idx, instr in enumerate(instructions):
-                                    label = instr.split("\n")[0][:60].strip().strip("#").strip() or f"指令 {idx+1}"
-                                    if st.button(f"🚀 评测指令{idx+1}: {label}", key=f"eval_instr_{idx}", use_container_width=True):
-                                        st.session_state.upload_task = instr
-                                        st.session_state.running = True
-                                        st.session_state.results = []
-                                        st.rerun()
-                                st.info("👆 选择一条指令，系统将自动评测（请在下方查看进度和结果）")
-                                dialogs_data = [{"__instr_set__": True}]  # 标记为指令集，跳过对话解析错误
-                        dk = next((k for k in ["dialog_id","dialog","session","会话","id","conversation_id"] if k in hdr), None)
-                        tk = next((k for k in ["task_instruction","instruction","task","任务","任务指令"] if k in hdr), None)
-                        if tk and drows[0].get(tk): task_instruction = str(drows[0][tk] or "")
-                        if dk:
-                            from itertools import groupby
-                            for gid, group in groupby(drows, lambda r: r.get(dk, "")):
-                                turns = [{"role": r, "content": c} for r, c in [normalize_turn(r) for r in list(group)] if r and c]
-                                if turns: dialogs_data.append({"scenario_label": str(gid) or "对话", "turns": turns})
-                        else:
-                            turns = [{"role": r, "content": c} for r, c in [normalize_turn(r) for r in drows] if r and c]
-                            if turns: dialogs_data.append({"scenario_label": "对话", "turns": turns})
-
-            else:
-                data = json.loads(raw_text)
-                task_instruction = extract_task_instruction(data)
-                if "dialogs" in data:
-                    for item in data["dialogs"]:
-                        turns = parse_turns(item)
-                        if turns: dialogs_data.append({"scenario_label": extract_label(item, len(dialogs_data)), "turns": turns})
-                elif isinstance(data, list):
-                    for item in data:
-                        turns = parse_turns(item)
-                        if turns: dialogs_data.append({"scenario_label": extract_label(item, len(dialogs_data)), "turns": turns})
-                else:
-                    turns = parse_turns(data)
-                    if turns: dialogs_data.append({"scenario_label": extract_label(data, 0), "turns": turns})
-
-            if not dialogs_data:
+            if not parse_result.instruction_set and not dialogs_data:
                 st.error("❌ 未能解析出有效对话")
                 st.stop()
 
-            is_instr_set = dialogs_data[0].get("__instr_set__") if dialogs_data else False
-
-            if not is_instr_set:
+            if not parse_result.instruction_set:
                 if not task_instruction:
                     task_instruction = st.text_area("📝 输入任务指令", value="向用户介绍优惠活动...", height=60)
                     if not task_instruction.strip(): st.stop()
@@ -1099,7 +847,7 @@ with tab2:
                             st.text(f"  {'🧑' if t['role']=='user' else '🤖'} {t['content'][:80]}")
                         if len(dd['turns']) > 4: st.text(f"  ... +{len(dd['turns'])-4}轮")
 
-            if not is_instr_set and st.button("🚀 评测上传的对话", type="primary", use_container_width=True):
+            if not parse_result.instruction_set and st.button("🚀 评测上传的对话", type="primary", use_container_width=True):
                 if not settings.openai_api_key:
                     st.error("❌ 请先配置 API Key")
                     st.stop()
@@ -1115,10 +863,13 @@ with tab2:
                     status.info(f"[{i+1}/{len(dialogs_data)}] {dd['scenario_label']}")
                     progress.progress(int(i/len(dialogs_data)*90), text=f"评测 {i+1}...")
 
-                    scenario = type("S", (), {
-                        "persona_name": dd['scenario_label'], "persona_id": f"u{i}",
-                        "test_goal": "上传评测", "to_dict": lambda s: {"persona_name": s.persona_name},
-                    })()
+                    scenario = Scenario(
+                        persona_id=f"u{i}",
+                        persona_name=dd['scenario_label'],
+                        persona_description="上传评测",
+                        behavior=[],
+                        test_goal="上传评测",
+                    )
                     turns = []
                     for j, t in enumerate(dd['turns']):
                         if t['role'] == 'user':
@@ -1156,7 +907,6 @@ with tab2:
         total = len(all_sc)
         pb = st.progress(0, text="初始化...")
         sbx = st.empty()
-        import traceback as _tb2
         for i2, sc in enumerate(all_sc):
             try:
                 pct = int((i2+1)/total*100)
@@ -1170,7 +920,7 @@ with tab2:
             except Exception as e2:
                 st.error(f"❌ {sc.persona_name}: {e2}")
                 with st.expander("🔍 错误堆栈"):
-                    st.code(_tb2.format_exc(), language="python")
+                    st.code(traceback.format_exc(), language="python")
         st.session_state.running = False
         sbx.success(f"🎉 完成! {len(st.session_state.results)}/{total} 个场景")
 
@@ -1185,17 +935,7 @@ with tab2:
                 n = sc.persona_name if hasattr(sc,'persona_name') else "场景"
                 st.metric(n, f"{mj.overall_mean}/100", f"σ={mj.overall_std}")
         if len(st.session_state.results) > 0:
-            fig = go.Figure()
-            colors = ['#667eea','#43a047','#ef6c00']
-            for idx, r in enumerate(st.session_state.results[:3]):
-                e = r["evaluation"]; sc = r["scenario"]
-                keys = [d["key"] for d in DIMENSIONS]
-                scores = [e.dimensions[k].score for k in keys if k in e.dimensions]
-                names = [d["name"][:4] for d in DIMENSIONS if d["key"] in e.dimensions]
-                n = sc.persona_name if hasattr(sc,'persona_name') else "场景"
-                if scores and names:
-                    fig.add_trace(go.Scatterpolar(r=scores+[scores[0]], theta=names+[names[0]], name=n, line=dict(color=colors[idx%3],width=2)))
-            fig.update_layout(height=300, margin=dict(l=40,r=40,t=10,b=10), legend=dict(orientation='h', y=-0.1))
+            fig = render_comparison_radar_chart(st.session_state.results, max_scenarios=3, height=300)
             st.plotly_chart(fig, use_container_width=True)
         st.caption("💡 提示：点击上方「📊 评测结果」Tab可查看完整报告和对话详情")
 
@@ -1238,24 +978,7 @@ with tab3:
         # 雷达图对比
         if len(st.session_state.results) >= 1:
             st.markdown("#### 📈 评分维度雷达图")
-            fig = go.Figure()
-            colors = ['#667eea', '#43a047', '#ef6c00', '#c62828', '#8e24aa', '#00acc1']
-            for idx, result in enumerate(st.session_state.results):
-                s = result["scenario"]
-                e = result["evaluation"]
-                dims = [dim["name"][:4] for dim in DIMENSIONS if dim["key"] in e.dimensions]
-                scores = [e.dimensions[dim["key"]].score for dim in DIMENSIONS if dim["key"] in e.dimensions]
-                fig.add_trace(go.Scatterpolar(
-                    r=scores + [scores[0]], theta=dims + [dims[0]],
-                    name=s.persona_name, fill='toself',
-                    line=dict(color=colors[idx % len(colors)], width=2),
-                ))
-            fig.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 5])),
-                legend=dict(orientation="h", y=-0.15),
-                height=400, margin=dict(l=60, r=60, t=10, b=60),
-                paper_bgcolor='rgba(0,0,0,0)',
-            )
+            fig = render_comparison_radar_chart(st.session_state.results)
             st.plotly_chart(fig, use_container_width=True)
 
         # 详细结果
